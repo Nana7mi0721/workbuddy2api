@@ -86,6 +86,30 @@ func (g *Gateway) ResetStats() gwResp {
 	return g.do(http.MethodPost, "/v1/stats/reset", nil)
 }
 
+// Checkin 调 /v1/checkin（全量签到 + 余额刷新）。逐号 2~3 次上游调用，账号多时
+// 会超过通用 30s 客户端超时，这里用独立 3 分钟长超时客户端。
+func (g *Gateway) Checkin() gwResp {
+	c := &http.Client{Timeout: 3 * time.Minute}
+	req, err := http.NewRequest(http.MethodPost, g.base+"/v1/checkin", nil)
+	if err != nil {
+		return gwResp{Err: err}
+	}
+	if g.key != "" {
+		req.Header.Set("Authorization", "Bearer "+g.key)
+	}
+	start := time.Now()
+	resp, err := c.Do(req)
+	if err != nil {
+		return gwResp{Err: err, Elapsed: time.Since(start)}
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return gwResp{Err: err, Status: resp.StatusCode, Elapsed: time.Since(start)}
+	}
+	return gwResp{Status: resp.StatusCode, Body: b, Elapsed: time.Since(start)}
+}
+
 type adminReq struct {
 	Reason string `json:"reason,omitempty"`
 }

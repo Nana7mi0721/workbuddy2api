@@ -148,11 +148,13 @@ func (c *PanelConfig) ServerExe() string { return c.resolve(c.Gateway.ServerExe)
 func (c *PanelConfig) LoginExe() string  { return c.resolve(c.Gateway.LoginExe) }
 func (c *PanelConfig) BaseDir() string   { return c.baseDir }
 
-// GatewayConfig 读取网关 config.json 的关键字段（api_key / listen / admin / metrics）。
-// 面板用它来代填鉴权头，浏览器端永远拿不到密钥。
+// GatewayConfig 读取网关 config.json 的关键字段（api_key / api_keys / listen / admin / metrics）。
+// 面板用它来代填鉴权头；api_keys 供 API 配置页的密钥列表展示（列表只出掩码，
+// 明文仅在用户显式点「显示」时经 /api/access/reveal 单把取用）。
 type GatewayConfig struct {
 	Listen string `json:"listen"`
 	APIKey string `json:"api_key"`
+	APIKeys []GatewayAPIKey `json:"api_keys"`
 	Admin  struct {
 		Enabled      bool   `json:"enabled"`
 		AuditEnabled bool   `json:"audit_enabled"`
@@ -161,6 +163,14 @@ type GatewayConfig struct {
 	Metrics struct {
 		Enabled bool `json:"enabled"`
 	} `json:"metrics"`
+}
+
+// GatewayAPIKey 网关 config.json 的 api_keys 元素（分组密钥，与网关侧
+// cmd/server APIKeyEntry 同形）。
+type GatewayAPIKey struct {
+	Key    string   `json:"key"`
+	Name   string   `json:"name"`
+	Groups []string `json:"groups"`
 }
 
 func (c *PanelConfig) readGatewayConfig() (*GatewayConfig, error) {

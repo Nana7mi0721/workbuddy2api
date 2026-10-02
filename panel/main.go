@@ -24,7 +24,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const panelVersion = "1.1.0"
+const panelVersion = "1.2.0"
 
 type App struct {
 	cfg      *PanelConfig
@@ -135,6 +135,12 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/stats/reset", a.hStatsReset)
 	mux.HandleFunc("GET /api/models", a.hModels)
 	mux.HandleFunc("GET /api/metrics", a.hMetrics)
+
+	// ---- API 接入（API 配置页：接入信息/密钥列表，密钥默认掩码） ----
+	mux.HandleFunc("GET /api/access", a.hAccess)
+	mux.HandleFunc("POST /api/access/reveal", a.hAccessReveal)
+	// 概览页快捷操作：面板代触发网关全量签到（服务端注入 api_key）。
+	mux.HandleFunc("POST /api/checkin-proxy", a.hCheckinProxy)
 
 	// ---- 账号 ----
 	mux.HandleFunc("GET /api/accounts", a.hAccounts)
@@ -309,6 +315,124 @@ func (a *App) gatewayConfigSanitized() map[string]any {
 		delete(m, "api_key")
 	}
 	return m
+}
+
+// ---------- API 接入（API 配置页） ----------
+
+// accessKey 一把网关鉴权密钥的展示形态：默认只出掩码，明文经 /api/access/reveal
+// 按名单把取用（取用落服务端日志）。与配置页直接看明文的现状相比，这里是收口而非放权。
+type accessKey struct {
+	Name   string   `json:"name"`
+	Masked string   `json:"masked"`
+	Groups []string `json:"groups,omitempty"`
+	Main   bool     `json:"main"`
+}
+
+// hAccess GET /api/access：API 配置页的接入信息（base_url / 协议清单 / 密钥掩码列表）。
+func (a *App) hAccess(w http.ResponseWriter, r *http.Request) {
+	gc := a.gwCfg
+	if gc == nil {
+		fail(w, http.StatusBadGateway, "网关配置不可读: "+a.gwCfgErr)
+		return
+	}
+	keys := make([]accessKey, 0, 1+len(gc.APIKeys))
+	if gc.APIKey != "" {
+		keys = append(keys, accessKey{Name: "主密钥（不限分组）", Masked: maskKey(gc.APIKey), Main: true})
+	}
+	for _, k := range gc.APIKeys {
+		if k.Key == "" {
+			continue
+		}
+		keys = append(keys, accessKey{Name: k.Name, Masked: maskKey(k.Key), Groups: k.Groups})
+	}
+	ok(w, map[string]any{
+		"base_url":      accessBaseURL(gc.Listen),
+		"listen":        gc.Listen,
+		"protocols":     accessProtocols(),
+		"keys":          keys,
+		"admin_enabled": gc.Admin.Enabled,
+	})
+}
+
+// accessBaseURL 从网关 listen（":7863" / "0.0.0.0:7863" / "127.0.0.1:7863"）拼
+// 本机访问地址；listen 空/异常回落部署默认 :7863。
+func accessBaseURL(listen string) string {
+	if listen == "" {
+		listen = ":7863"
+	}
+	i := strings.LastIndex(listen, ":")
+	host, port := listen[:i+1], listen[i+1:]
+	host = strings.TrimSuffix(host, ":")
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + host + ":" + port
+}
+
+// accessProtocols 三协议端点清单（静态：与网关路由一致）。
+func accessProtocols() []map[string]any {
+	return []map[string]any{
+		{"protocol": "OpenAI Chat", "path": "/v1/chat/completions", "desc": "OpenAI 兼容对话（绝大多数工具/客户端）"},
+		{"protocol": "OpenAI Responses", "path": "/v1/responses", "desc": "Codex CLI 及 Responses 协议客户端"},
+		{"protocol": "Anthropic", "path": "/v1/messages", "desc": "Claude Code / Anthropic SDK（x-api-key 头）"},
+		{"protocol": "通用", "path": "/v1/models", "desc": "模型列表（带 anthropic-version 头时返回 Anthropic 形状）"},
+		{"protocol": "Anthropic", "path": "/v1/messages/count_tokens", "desc": "输入 token 估算（不打上游）"},
+	}
+}
+
+// hAccessReveal POST /api/access/reveal {name:"main"|<分组密钥名>}：按名返回单把
+// 密钥明文。鉴权由 withLogging 统一处理（配置了密码必须已登录）；取用留痕。
+func (a *App) hAccessReveal(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	_ = readBody(r, &body)
+	gc := a.gwCfg
+	if gc == nil {
+		fail(w, http.StatusBadGateway, "网关配置不可读: "+a.gwCfgErr)
+		return
+	}
+	var key, label string
+	switch {
+	case body.Name == "main":
+		key, label = gc.APIKey, "主密钥"
+	default:
+		for _, k := range gc.APIKeys {
+			if k.Name != "" && k.Name == body.Name {
+				key, label = k.Key, k.Name
+				break
+			}
+		}
+	}
+	if key == "" {
+		fail(w, http.StatusNotFound, "密钥不存在或为空")
+		return
+	}
+	log.Printf("密钥明文取用: name=%q label=%q from=%s", body.Name, label, r.RemoteAddr)
+	ok(w, map[string]any{"key": key, "name": body.Name})
+}
+
+// hCheckinProxy POST /api/checkin-proxy：面板代触发网关全量签到（/v1/checkin）。
+// 网关侧带 30s 冷却与 api_key 鉴权（此处服务端注入）；返回体透传签到报告。
+func (a *App) hCheckinProxy(w http.ResponseWriter, r *http.Request) {
+	resp := a.gateway.Checkin()
+	if resp.Err != nil {
+		fail(w, http.StatusBadGateway, resp.Err.Error())
+		return
+	}
+	if resp.Status != http.StatusOK {
+		fail(w, resp.Status, gatewayError(resp))
+		return
+	}
+	var rep struct {
+		Total   int `json:"total"`
+		OK      int `json:"ok"`
+		Already int `json:"already"`
+		Fail    int `json:"fail"`
+		Skipped int `json:"skipped"`
+	}
+	_ = json.Unmarshal(resp.Body, &rep)
+	ok(w, map[string]any{"report": rep, "elapsed_ms": resp.Elapsed.Milliseconds()})
 }
 
 // scheduleEnabled 读出各任务开关（供任务页显示「已启用/已停用」）。

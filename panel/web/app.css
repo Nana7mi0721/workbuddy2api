@@ -1,46 +1,50 @@
-/* workbuddy2api 面板样式：深蓝灰底 + 青绿主色（对齐 workbuddy-switch 的视觉语言） */
+/* workbuddy2api 面板样式：对齐 API 开放平台视觉语言（参考 platform.deepseek.com）
+   —— 浅色默认 + 蓝主色 + 白侧栏白卡片 + 细边框小圆角 + 深色代码块 */
 :root {
-  --primary: #4dbf9b;
-  --primary-fg: #06231b;
-  --primary-soft: rgba(77, 191, 155, 0.14);
-  --radius: 12px;
+  --primary: #4d6bfe;
+  --primary-fg: #ffffff;
+  --primary-soft: rgba(77, 107, 254, 0.09);
+  --radius: 10px;
   --radius-sm: 8px;
-  --radius-lg: 16px;
-  --ok: #4dbf9b;
-  --warn: #f0a35e;
-  --danger: #f2555a;
-  --info: #6aa9ff;
-  --purple: #a98bfa;
+  --radius-lg: 12px;
+  --ok: #10a56b;
+  --warn: #d97706;
+  --danger: #dc2626;
+  --info: #2e90fa;
+  --purple: #7c5cfc;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
 }
 :root,
 :root[data-theme="dark"] {
-  --bg: #171c27;
-  --bg-soft: #1b2231;
-  --card: #1d2432;
-  --card-2: #222a3a;
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.16);
+  --bg: #14161d;
+  --bg-soft: #171a22;
+  --card: #1c1f29;
+  --card-2: #22252f;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
   --fg: #e7ecf4;
   --fg-soft: #b9c2d0;
   --muted: #8792a4;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 12px 30px rgba(0, 0, 0, 0.28);
   --hover: rgba(255, 255, 255, 0.05);
-  --code-bg: #12161f;
+  --code-bg: #0d1117;
+  --primary: #7b9bff;
+  --primary-fg: #0b1020;
+  --primary-soft: rgba(123, 155, 255, 0.14);
 }
 :root[data-theme="light"] {
-  --bg: #f5f6f9;
-  --bg-soft: #eceef3;
+  --bg: #f3f4f8;
+  --bg-soft: #ffffff;
   --card: #ffffff;
-  --card-2: #f7f8fb;
-  --border: rgba(18, 24, 38, 0.1);
-  --border-strong: rgba(18, 24, 38, 0.18);
-  --fg: #17202f;
-  --fg-soft: #3c4757;
-  --muted: #6b7686;
-  --shadow: 0 1px 2px rgba(15, 23, 42, 0.025), 0 10px 28px rgba(15, 23, 42, 0.06);
-  --hover: rgba(15, 23, 42, 0.04);
+  --card-2: #f7f8fa;
+  --border: #e5e7eb;
+  --border-strong: #d6dae2;
+  --fg: #1b1f2d;
+  --fg-soft: #3c4457;
+  --muted: #7a8299;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px rgba(16, 24, 40, 0.05);
+  --hover: rgba(27, 31, 45, 0.045);
   --code-bg: #f2f4f8;
 }
 
@@ -69,9 +73,9 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; }
 .brand-mark {
-  width: 32px; height: 32px; border-radius: 10px; flex: 0 0 32px;
-  background: linear-gradient(140deg, var(--primary), #2f8f74);
-  display: grid; place-items: center; color: #06231b; font-weight: 700; font-size: 15px;
+  width: 32px; height: 32px; border-radius: 9px; flex: 0 0 32px;
+  background: linear-gradient(140deg, #5b7bff, #3b56f0);
+  display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px;
 }
 .brand-text b { display: block; font-size: 14px; letter-spacing: -0.01em; }
 .brand-text span { display: block; font-size: 11px; color: var(--muted); }
@@ -90,7 +94,7 @@ code, pre, .mono { font-family: var(--mono); }
 /* 宽屏流体：小屏收紧、大屏放开（最高 1800px），不再在大显示器上留大片空白 */
 .page { padding: 26px clamp(18px, 2.6vw, 48px) 60px; max-width: 1800px; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
-.page-head h1 { font-size: clamp(22px, 2.2vw, 28px); font-weight: 600; letter-spacing: -0.02em; margin: 0; }
+.page-head h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
 .page-head p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
 .head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .section { margin-top: 26px; }
@@ -176,7 +180,7 @@ label.field em { color: var(--muted); font-style: normal; font-size: 11.5px; dis
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-th { color: var(--muted); font-weight: 550; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; position: sticky; top: 0; background: var(--card); z-index: 1; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; position: sticky; top: 0; background: var(--card); z-index: 1; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--hover); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -260,6 +264,36 @@ details.inline summary { cursor: pointer; font-size: 12.5px; color: var(--fg-sof
 @keyframes spin { to { transform: rotate(360deg); } }
 .link-box { display: flex; gap: 8px; align-items: center; }
 .link-box input { font-family: var(--mono); font-size: 12px; }
+
+/* ---------- 代码示例块（恒定深色，对齐开放平台文档样式） ---------- */
+.code-wrap {
+  border-radius: var(--radius); overflow: hidden; border: 1px solid #1f2430;
+  background: #0d1117;
+}
+.code-head {
+  display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+  background: #161b26; color: #9aa4b8; font-size: 12px;
+  border-bottom: 1px solid #1f2430;
+}
+.code-head .btn { color: #cdd5e4; }
+.code-head .btn:hover { background: rgba(255, 255, 255, 0.07); }
+.code-block {
+  margin: 0; padding: 12px 14px; overflow: auto; max-height: 420px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.65;
+  color: #dbe2ef; white-space: pre;
+}
+.code-block i { font-style: normal; }
+.tk-k { color: #ff7b72; }             /* 关键字 */
+.tk-s { color: #a5d6a7; }             /* 字符串 */
+.tk-c { color: #6a7383; }             /* 注释 */
+.tk-n { color: #f2cc60; }             /* 数字 */
+.tk-f { color: #79c0ff; }             /* CLI 旗标 */
+:root[data-theme="light"] .code-wrap { border-color: #d8dee9; }
+
+/* ---------- API 配置页 ---------- */
+.access-tabs { margin-bottom: 4px; }
+.access-tabs button { padding: 6px 16px; font-size: 13px; border-radius: 8px; }
+.key-mask { font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; }
 
 /* ---------- 窄屏适配 ---------- */
 .menu-btn { display: none; position: fixed; top: 12px; left: 12px; z-index: 55; }

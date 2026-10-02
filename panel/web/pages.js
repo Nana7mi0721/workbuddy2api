@@ -1,4 +1,4 @@
-// 各功能页：概览 / 账号 / 统计 / 日志 / 配置 / 服务
+// 各功能页：概览 / API 配置 / 账号 / 统计 / 日志 / 配置 / 服务
 import { esc, api, all, isErr, num, flt, pct, bytes, dur, ts, tsShort, ago, uid8, inlineKV, objKV } from './util.js';
 import { toast, toastErr, toastWarn, busy, openModal, confirmModal, promptModal, delegate, copy, badge, dotBadge, kpi, table, statusBadge, pageHead, jsonBlock, errorCard } from './ui.js';
 
@@ -40,6 +40,33 @@ export const overview = {
     delegate(root, {
       reload: () => root.dispatchEvent(new CustomEvent('wb:reload')),
       toggleRef: () => ctx.cycleAuto(),
+      checkin: async (el) => {
+        const okc = await confirmModal('一键签到', '将对全部账号执行一次签到 + 余额刷新（每号 2~3 次上游调用），确认执行？', { okLabel: '签到' });
+        if (!okc) return;
+        busy(el);
+        try {
+          const r = await api.post('/api/checkin-proxy');
+          if (r.report) {
+            const rp = r.report;
+            toast(`签到完成：成功 ${rp.ok ?? 0} · 已签 ${rp.already ?? 0} · 失败 ${rp.fail ?? 0} · 跳过 ${rp.skipped ?? 0}`, 'ok', 5200);
+          } else {
+            toast(r.message || '签到已执行');
+          }
+          setTimeout(() => root.dispatchEvent(new CustomEvent('wb:reload')), 800);
+        } catch (e) { toastErr(e); }
+        busy(el, false);
+      },
+      restartGw: async (el) => {
+        const okc = await confirmModal('重启网关', '重启会造成 1~5 秒的请求中断，确认继续？', { okLabel: '重启' });
+        if (!okc) return;
+        busy(el);
+        try {
+          const r = await api.post('/api/service/restart');
+          toast(r.message || '重启完成');
+          setTimeout(() => root.dispatchEvent(new CustomEvent('wb:reload')), 1500);
+        } catch (e) { toastErr(e); }
+        busy(el, false);
+      },
       runTask: async (el) => {
         busy(el);
         try {
@@ -76,7 +103,10 @@ function renderOverview(d, ctx) {
     : (ov && ov.panel && ov.panel.started_at ? (Date.now() - new Date(ov.panel.started_at).getTime()) / 1000 : 0);
   parts.push(pageHead('概览',
     `网关 <code>${esc(ctx.info.gateway)}</code> · 面板 v${esc(ctx.info.version)} · ${stats && stats.uptime_sec ? '网关已运行' : '面板已运行'} ${esc(dur(upSec))}`,
-    `<button class="btn" data-act="reload">刷新</button>
+    `<a class="btn primary" href="#/access">API 配置</a>
+     <button class="btn" data-act="checkin">一键签到</button>
+     <button class="btn" data-act="restartGw">重启网关</button>
+     <button class="btn" data-act="reload">刷新</button>
      <button class="btn" data-act="toggleRef">自动刷新：${ctx.autoMs() ? ctx.autoMs() / 1000 + 's' : '关'}</button>`));
 
   // 健康横幅
@@ -974,4 +1004,378 @@ function renderService(d, ctx) {
   return parts.join('');
 }
 
-export const pages = [overview, accounts, stats, logs, config, service];
+// ============================================================ API 配置
+
+const ACCESS_TABS = [
+  { id: 'basics', label: '接入信息' },
+  { id: 'models', label: '模型与定价' },
+  { id: 'snippets', label: '代码示例' },
+  { id: 'clients', label: '客户端配置' },
+];
+
+// 代码示例的三协议 × 三语言模板。$BASE 为接入地址；密钥用环境变量占位，
+// 不把真实密钥写进示例（用户复制后自行替换）。
+const SNIPPETS = {
+  chat: {
+    label: 'OpenAI Chat',
+    base: '/v1/chat/completions',
+    curl: (b) => `curl ${b}/v1/chat/completions \\
+  -H "Authorization: Bearer $WB_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "glm-5.2",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "你好"}
+    ],
+    "stream": false
+  }'`,
+    python: (b) => `from openai import OpenAI
+
+client = OpenAI(base_url="${b}/v1", api_key="$WB_API_KEY")
+
+resp = client.chat.completions.create(
+    model="glm-5.2",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "你好"},
+    ],
+)
+print(resp.choices[0].message.content)`,
+    node: (b) => `import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "${b}/v1",
+  apiKey: process.env.WB_API_KEY,
+});
+
+const resp = await client.chat.completions.create({
+  model: "glm-5.2",
+  messages: [
+    { role: "system", content: "You are a helpful assistant." },
+    { role: "user", content: "你好" },
+  ],
+});
+console.log(resp.choices[0].message.content);`,
+  },
+  responses: {
+    label: 'OpenAI Responses',
+    base: '/v1/responses',
+    curl: (b) => `curl ${b}/v1/responses \\
+  -H "Authorization: Bearer $WB_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "glm-5.2",
+    "input": "用一句话介绍你自己",
+    "max_output_tokens": 512
+  }'`,
+    python: (b) => `from openai import OpenAI
+
+client = OpenAI(base_url="${b}/v1", api_key="$WB_API_KEY")
+
+resp = client.responses.create(
+    model="glm-5.2",
+    input="用一句话介绍你自己",
+    max_output_tokens=512,
+)
+print(resp.output_text)`,
+    node: (b) => `import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "${b}/v1",
+  apiKey: process.env.WB_API_KEY,
+});
+
+const resp = await client.responses.create({
+  model: "glm-5.2",
+  input: "用一句话介绍你自己",
+  max_output_tokens: 512,
+});
+console.log(resp.output_text);`,
+  },
+  anthropic: {
+    label: 'Anthropic',
+    base: '/v1/messages',
+    curl: (b) => `curl ${b}/v1/messages \\
+  -H "x-api-key: $WB_API_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "glm-5.2",
+    "max_tokens": 512,
+    "messages": [
+      {"role": "user", "content": "你好"}
+    ]
+  }'`,
+    python: (b) => `import anthropic
+
+client = anthropic.Anthropic(
+    base_url="${b}",
+    api_key="$WB_API_KEY",
+)
+
+msg = client.messages.create(
+    model="glm-5.2",
+    max_tokens=512,
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(msg.content[0].text)`,
+    node: (b) => `import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "${b}",
+  apiKey: process.env.WB_API_KEY,
+});
+
+const msg = await client.messages.create({
+  model: "glm-5.2",
+  max_tokens: 512,
+  messages: [{ role: "user", content: "你好" }],
+});
+console.log(msg.content[0].text);`,
+  },
+};
+
+// highlightCode 轻量语法高亮：正则分词后逐段 escape 上色（先 tokenize 后 escape，
+// 不会引入 XSS）。支持注释 / 字符串 / 关键字 / 数字 / CLI 旗标，覆盖 bash/python/js。
+const HL_RE = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|#[^\n]*|\b(?:curl|export|from|import|const|await|async|print|new|function|return|true|false|null)\b|--[a-zA-Z-]+|\b\d+(?:\.\d+)?\b)/g;
+function highlightCode(code) {
+  const out = [];
+  let last = 0, m;
+  HL_RE.lastIndex = 0;
+  while ((m = HL_RE.exec(code)) !== null) {
+    out.push(esc(code.slice(last, m.index)));
+    const t = m[0];
+    const cls = t.startsWith('#') ? 'tk-c'
+      : t.startsWith('"') || t.startsWith("'") ? 'tk-s'
+      : t.startsWith('--') ? 'tk-f'
+      : /^\d/.test(t) ? 'tk-n' : 'tk-k';
+    out.push(`<i class="${cls}">${esc(t)}</i>`);
+    last = m.index + t.length;
+  }
+  out.push(esc(code.slice(last)));
+  return out.join('');
+}
+
+function codeBlock(code, title, act) {
+  return `<div class="code-wrap">
+    <div class="code-head"><span>${esc(title)}</span><div class="spacer"></div>${act ? `<button class="btn ghost sm" data-act="copySnippet">${act}</button>` : ''}</div>
+    <pre class="code-block"><code>${highlightCode(code)}</code></pre>
+  </div>`;
+}
+
+export const access = {
+  id: 'access', label: 'API 配置', icon: '◈',
+  mount(root, ctx) {
+    const st = { tab: 'basics', acc: null, modelsErr: null, models: [], q: '', proto: 'chat', lang: 'curl', revealed: {} };
+    const load = async () => {
+      const d = await all({ acc: api.get('/api/access'), models: api.get('/api/models') });
+      if (ctx.stale()) return;
+      st.acc = isErr(d.acc) ? null : d.acc;
+      st.accErr = isErr(d.acc) ? d.acc.__error : '';
+      st.modelsErr = isErr(d.models) ? d.models.__error : '';
+      const md = (!isErr(d.models) && d.models && Array.isArray(d.models.data)) ? d.models.data : [];
+      st.models = md;
+      render();
+    };
+    const render = () => { root.innerHTML = renderAccess(st, ctx); };
+    root.innerHTML = `<div class="empty">正在读取接入信息…</div>`;
+    load().catch((e) => { console.error(e); if (!ctx.stale()) root.innerHTML = errorCard('加载失败：' + e.message); });
+    ctx.onReload(load);
+    ctx.every(load, 60000); // 接入信息变化频率低（改配置才变），60s 兜底刷新
+
+    delegate(root, {
+      reload: () => root.dispatchEvent(new CustomEvent('wb:reload')),
+      tab: (el) => { st.tab = el.dataset.tab; render(); },
+      proto: (el) => { st.proto = el.dataset.proto; render(); },
+      lang: (el) => { st.lang = el.dataset.lang; render(); },
+      '@mq': (el) => { st.q = el.value; render(); },
+      copyText: (el) => copy(el.dataset.text || el.dataset.url || '', '已复制到剪贴板'),
+      reveal: async (el) => {
+        const name = el.dataset.name;
+        busy(el);
+        try {
+          const r = await api.post('/api/access/reveal', { name });
+          st.revealed[name] = r.key;
+          render();
+        } catch (e) { toastErr(e); busy(el, false); }
+      },
+      hide: (el) => { delete st.revealed[el.dataset.name]; render(); },
+      copyKey: async (el) => {
+        const name = el.dataset.name;
+        busy(el);
+        try {
+          const r = await api.post('/api/access/reveal', { name });
+          copy(r.key, `密钥 ${name} 已复制（取用已记录在面板日志）`);
+        } catch (e) { toastErr(e); }
+        busy(el, false);
+      },
+      copySnippet: (el) => {
+        const proto = SNIPPETS[st.proto] || SNIPPETS.chat;
+        const base = (st.acc && st.acc.base_url) || 'http://127.0.0.1:7863';
+        copy(proto[st.lang](base), '代码已复制');
+      },
+      clientCopy: (el) => copy(el.dataset.text || '', '配置已复制'),
+    });
+  },
+};
+
+function lanBaseURL(base) {
+  // 用当前访问页面的 hostname 推导局域网地址（面板与网关同机部署）。
+  try {
+    const u = new URL(base);
+    if (location.hostname && location.hostname !== '127.0.0.1' && location.hostname !== 'localhost') {
+      return `${location.protocol}//${location.hostname}:${u.port}`;
+    }
+    return '';
+  } catch (e) { return ''; }
+}
+
+function renderAccess(st, ctx) {
+  const parts = [];
+  parts.push(pageHead('API 配置', '把网关接入到你的应用 / 客户端：接入地址 · 密钥 · 模型 · 代码示例',
+    `<button class="btn" data-act="reload">刷新</button>`));
+  parts.push(`<div class="seg access-tabs">${ACCESS_TABS.map((t) =>
+    `<button class="${st.tab === t.id ? 'active' : ''}" data-act="tab" data-tab="${t.id}">${esc(t.label)}</button>`).join('')}</div>`);
+  if (!st.acc) {
+    parts.push(`<div class="section">${errorCard('读取接入信息失败：' + esc(st.accErr || '未知错误'), '网关 config.json 不可读时本页不可用，请先在服务页确认网关已启动。')}</div>`);
+    return parts.join('');
+  }
+  if (st.tab === 'basics') parts.push(renderBasics(st));
+  else if (st.tab === 'models') parts.push(renderModelsTab(st));
+  else if (st.tab === 'snippets') parts.push(renderSnippets(st));
+  else parts.push(renderClients(st));
+  return parts.join('');
+}
+
+function renderBasics(st) {
+  const acc = st.acc;
+  const lan = lanBaseURL(acc.base_url);
+  const parts = [];
+  // 接入地址
+  parts.push(`<div class="section"><div class="section-title">接入地址</div><div class="card">
+    <div class="kv">
+      <dt>本机</dt><dd class="link-box"><code>${esc(acc.base_url)}</code>
+        <button class="btn sm" data-act="copyText" data-text="${esc(acc.base_url)}">复制</button></dd>
+      ${lan ? `<dt>局域网</dt><dd class="link-box"><code>${esc(lan)}</code>
+        <button class="btn sm" data-act="copyText" data-text="${esc(lan)}">复制</button>
+        <span class="hint">按当前页面主机名推导，远程调用以实际可达地址为准</span></dd>` : ''}
+      <dt>网关监听</dt><dd><code>${esc(acc.listen || '')}</code></dd>
+    </div>
+  </div></div>`);
+  // 端点清单
+  const rows = (acc.protocols || []).map((p) => [
+    badge(p.protocol, p.protocol === 'Anthropic' ? 'purple' : p.protocol === '通用' ? '' : 'info'),
+    `<span class="mono">${esc(p.path)}</span> <button class="btn ghost sm" data-act="copyText" data-text="${esc(acc.base_url + p.path)}">复制</button>`,
+    esc(p.desc),
+  ]);
+  parts.push(`<div class="section"><div class="section-title">端点清单</div>${table([{ label: '协议' }, { label: '端点' }, { label: '说明' }], rows, '无端点')}</div>`);
+  // 密钥
+  const keys = acc.keys || [];
+  if (!keys.length) {
+    parts.push(`<div class="section"><div class="section-title">API 密钥</div>
+      <div class="card"><div class="alert warn">网关未配置 <code>api_key</code>（不鉴权模式）。生产 / 局域网环境建议在<a href="#/config">配置页</a>设置密钥。</div></div></div>`);
+  } else {
+    const rows = keys.map((k) => {
+      const shown = st.revealed[k.main ? 'main' : k.name];
+      const nm = k.main ? 'main' : k.name;
+      return [`<b>${esc(k.name)}</b>${k.main ? ' ' + badge('主密钥', 'ok') : ''}${(k.groups || []).length ? ' ' + k.groups.map((g) => badge('分组: ' + g, 'info')).join(' ') : ''}`,
+        `<code class="key-mask">${shown ? esc(shown) : esc(k.masked)}</code>`,
+        `<span class="row wrap" style="gap:6px">
+          ${shown
+            ? `<button class="btn sm" data-act="hide" data-name="${esc(nm)}">隐藏</button>`
+            : `<button class="btn sm" data-act="reveal" data-name="${esc(nm)}">显示</button>`}
+          <button class="btn sm primary" data-act="copyKey" data-name="${esc(nm)}">复制</button>
+        </span>`];
+    });
+    parts.push(`<div class="section"><div class="section-title">API 密钥</div>${table([{ label: '名称' }, { label: '密钥' }, { label: '操作' }], rows)}
+      <div class="hint" style="margin-top:8px">「显示 / 复制」会把密钥明文经面板后端取出一次，取用记录在面板运行日志中；密钥本体保存在网关 <code>config.json</code>，<a href="#/config">配置页</a>可增删分组密钥（改动后重启网关生效）。</div></div>`);
+  }
+  return parts.join('');
+}
+
+function renderModelsTab(st) {
+  const parts = [];
+  parts.push(`<div class="log-toolbar" style="margin-bottom:12px">
+    <input type="text" placeholder="搜索模型 id / 描述…" data-change="mq" value="${esc(st.q)}" style="min-width:260px">
+    <span class="hint">共 ${num(st.models.length)} 个模型（来自网关 /v1/models，动态）</span>
+  </div>`);
+  if (st.modelsErr) {
+    parts.push(errorCard('读取模型列表失败：' + esc(st.modelsErr), '网关未启动或无健康账号时模型列表为空。'));
+    return parts.join('');
+  }
+  const q = st.q.trim().toLowerCase();
+  const list = st.models.filter((m) => !q || String(m.id || '').toLowerCase().includes(q) || String(m.description || '').toLowerCase().includes(q) || String(m.name || '').toLowerCase().includes(q));
+  const rows = list.map((m) => {
+    const caps = [];
+    if (m.supports_images) caps.push(badge('图片', 'info'));
+    if (m.supports_tool_call) caps.push(badge('工具', 'ok'));
+    if (m.supports_reasoning || m.reasoning_supported_efforts) caps.push(badge('推理', 'purple'));
+    return [
+      `<span class="mono">${esc(m.id)}</span> <button class="btn ghost sm" data-act="copyText" data-text="${esc(m.id)}">复制</button>`,
+      esc(m.name || ''),
+      esc(m.credits || '—'),
+      m.context_length ? num(m.context_length) : '—',
+      m.max_output_tokens ? num(m.max_output_tokens) : '—',
+      m.reasoning_supported_efforts ? `<span class="mono">${esc((m.reasoning_supported_efforts || []).join(' / '))}</span>` : '—',
+      caps.join(' ') || '—',
+    ];
+  });
+  parts.push(`${table([
+    { label: '模型 id' }, { label: '名称' }, { label: '倍率' }, { label: '上下文', cls: 'num' },
+    { label: '最大输出', cls: 'num' }, { label: '推理档位' }, { label: '能力' },
+  ], rows, q ? '没有匹配的模型' : '暂无模型（网关动态列表为空）')}`);
+  parts.push(`<div class="hint" style="margin-top:8px">倍率为上游积分计费原文（如 <code>x0.05</code>）；「模型 id」可直接用于请求体的 <code>model</code> 字段，支持 <code>cn:</code> / <code>global:</code> 前缀选域。</div>`);
+  return parts.join('');
+}
+
+function renderSnippets(st) {
+  const proto = SNIPPETS[st.proto] || SNIPPETS.chat;
+  const base = st.acc.base_url;
+  const code = proto[st.lang] ? proto[st.lang](base) : '';
+  const langTabs = [['curl', 'cURL'], ['python', 'Python'], ['node', 'Node.js']];
+  return `<div class="section">
+    <div class="row wrap" style="gap:8px;margin-bottom:10px">
+      <div class="seg">${Object.entries(SNIPPETS).map(([id, p]) =>
+        `<button class="${st.proto === id ? 'active' : ''}" data-act="proto" data-proto="${id}">${esc(p.label)}</button>`).join('')}</div>
+      <div class="seg">${langTabs.map(([id, label]) =>
+        `<button class="${st.lang === id ? 'active' : ''}" data-act="lang" data-lang="${id}">${esc(label)}</button>`).join('')}</div>
+      <span class="hint">示例使用占位密钥 <code>$WB_API_KEY</code>，替换为「接入信息」页的真实密钥</span>
+    </div>
+    ${codeBlock(code, `${proto.label} · ${langTabs.find(([id]) => id === st.lang)?.[1] || st.lang} · ${proto.base}`, '复制代码')}
+    <div class="hint" style="margin-top:8px">${st.proto === 'anthropic'
+      ? 'Anthropic 协议用 <code>x-api-key</code> 头携带密钥；SDK 的 <code>base_url</code> 填网关根地址（不带 /v1）。'
+      : 'OpenAI 系 SDK 的 <code>base_url</code> 填 <code>' + esc(base) + '/v1</code>（SDK 会自动拼端点）。'}</div>
+  </div>`;
+}
+
+function renderClients(st) {
+  const b = st.acc.base_url;
+  const key = '$WB_API_KEY';
+  const blocks = [
+    {
+      title: 'Claude Code（Anthropic 协议）',
+      text: `export ANTHROPIC_BASE_URL="${b}"\nexport ANTHROPIC_AUTH_TOKEN="${key}"\nexport ANTHROPIC_MODEL="glm-5.2"`,
+      note: 'Bash/Zsh 写入 <code>~/.bashrc</code> 或会话内直接 export；Windows PowerShell 用 <code>$env:ANTHROPIC_BASE_URL="…"</code>。也可用 <code>model_alias</code> 配置把 claude-* 模型名映射到网关模型。',
+    },
+    {
+      title: 'Codex CLI（Responses 协议）',
+      text: `# ~/.codex/config.toml\nmodel = "glm-5.2"\nmodel_provider = "wb2api"\n\n[model_providers.wb2api]\nname = "workbuddy2api"\nbase_url = "${b}/v1"\nwire_api = "responses"\nenv_key = "WB2API_API_KEY"\n\n# 然后：export WB2API_API_KEY="${key}"`,
+      note: '网关无响应存储，请保持 Codex 默认的 <code>store=false</code> 整体重发模式（不受影响）。',
+    },
+    {
+      title: '通用 OpenAI 客户端（Chat 协议）',
+      text: `Base URL: ${b}/v1\nAPI Key:  ${key}\nModel:    glm-5.2`,
+      note: '适用于 CherryStudio、沉浸式翻译、LobeChat 等一切支持自定义 OpenAI 兼容端点的工具。',
+    },
+  ];
+  return `<div class="grid cards section">${blocks.map((c) => `
+    <div class="card">
+      <h3>${esc(c.title)}</h3>
+      <div style="margin:10px 0">${codeBlock(c.text, '配置', '')}</div>
+      <div class="hint">${c.note}</div>
+      <div style="margin-top:10px"><button class="btn sm primary" data-act="clientCopy" data-text="${esc(c.text)}">复制配置</button></div>
+    </div>`).join('')}</div>`;
+}
+
+export const pages = [overview, access, accounts, stats, logs, config, service];

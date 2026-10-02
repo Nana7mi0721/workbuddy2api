@@ -51,7 +51,7 @@ function ctxFor(pageId) {
 
 function shell() {
   const nav = pages.map((p) => `<a href="#/${p.id}" data-nav="${p.id}"><span class="ico">${p.icon}</span>${esc(p.label)}</a>`).join('');
-  const theme = localStorage.getItem('wb-theme') || 'dark';
+  const theme = localStorage.getItem('wb-theme') || 'light';
   document.documentElement.dataset.theme = theme;
   const html = `
   <div class="app">
