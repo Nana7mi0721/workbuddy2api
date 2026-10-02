@@ -116,6 +116,9 @@ type Config struct {
 	// 前缀。用途：Anthropic/Codex 客户端硬编码他方模型名（claude-sonnet-4-5 之类）
 	// 时映射到网关实际模型（如 "cn:glm-5.3"）。nil/未命中 = 原样透传。
 	ModelAlias map[string]string
+
+	// Daily 按日聚合观测（daily_stats.go）。nil = 不记录（测试/内嵌场景）。
+	Daily *DailyStats
 }
 
 // CheckinResult 单账号签到结果（POST /v1/checkin 返回体的 results 元素）。
@@ -189,6 +192,10 @@ type Handler struct {
 	// 仅当直接手搓 &Handler{} 时才为 nil，此时 admit/add 都是直通。
 	budget *dailyBudget
 
+	// daily 按日聚合观测（daily_stats.go，面板统计页长期趋势数据源）。
+	// 未接线（Config.Daily 为 nil）时所有 Record 是空操作。
+	daily *DailyStats
+
 	// lastCheckinUnix 上次手动签到**完成**时刻（unix 秒）。给 POST /v1/checkin 加一个
 	// 短冷却：一次签到会对每个账号打 2~3 次上游（refresh / daily-checkin / balance），
 	// 被脚本连点会成倍放大上游压力（含住宅代理出口的 WAF 风险）。进程内状态、重启清零。
@@ -214,6 +221,7 @@ func NewHandler(cfg Config) *Handler {
 		mux:         http.NewServeMux(),
 		taskRunning: map[string]bool{},
 		budget:      newDailyBudget(cfg.BudgetLimit),
+		daily:       cfg.Daily,
 	}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	// 多协议入站：Anthropic Messages（Claude Code 等）与 OpenAI Responses（Codex 等）。
@@ -228,6 +236,8 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /v1/stats", h.withAuth(h.stats))
 	h.mux.HandleFunc("POST /v1/stats/reset", h.withAuth(h.statsReset))
+	// 按日聚合（面板统计页长期趋势）：与 /v1/stats 同鉴权口径。
+	h.mux.HandleFunc("GET /v1/stats/history", h.withAuth(h.statsHistory))
 	// 手动签到入口（POST /v1/checkin）。**不**挂在 admin.enabled 闸下：签到是
 	// 幂等的余额刷新（不改变账号可用性），与 /admin/accounts/* 的 disable/revive
 	// 不同量级，和 /v1/stats/reset 同类；且控制台要开箱可用，不该要求先开管理面。
@@ -1178,6 +1188,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 不算合法成本观测（缺失≠0），仅记一条 WARN 协助排障，绝不写入账本。
 				log.Printf("WARN: [server] stream usage without credit acct=%s model=%s (no cost observation)", logfmt.Label(acct.UID, acct.Nickname), bareModel)
 			}
+			// 按日聚合（daily_stats.go，面板统计页长期趋势）：与成本账本同观测点，
+			// usage 缺失不记（缺失≠0）。
+			if hasUsage {
+				h.daily.Record(bareModel, st.prompt, st.toks, st.cacheHit, st.credit)
+			}
 			rc.Close()
 			return
 		}
@@ -1198,6 +1213,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		// metrics 采集（非流式）：与流式同口径，从同一份 usage 带出。
 		fillStatFromUsage(st, resp)
+		// 按日聚合（daily_stats.go）：与流式观测同口径，usage 缺失不记。
+		if st.hasUsage {
+			h.daily.Record(bareModel, st.prompt, st.toks, st.cacheHit, st.credit)
+		}
 		return
 	}
 	// 末端错误透传（error-passthrough）：上游返回的错误原样透传，不再规范化成固定文案。

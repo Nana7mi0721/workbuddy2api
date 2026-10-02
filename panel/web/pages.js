@@ -1,6 +1,7 @@
 // 各功能页：概览 / API 配置 / 账号 / 统计 / 日志 / 配置 / 服务
 import { esc, api, all, isErr, num, flt, pct, bytes, dur, ts, tsShort, ago, uid8, inlineKV, objKV } from './util.js';
 import { toast, toastErr, toastWarn, busy, openModal, confirmModal, promptModal, delegate, copy, badge, dotBadge, kpi, table, statusBadge, pageHead, jsonBlock, errorCard } from './ui.js';
+import { PALETTE, fmtInt, fmtTokens, fmtCredit, lineChart, stackedBars, bars, donut, heatmap } from './charts.js';
 
 const realmBadge = (r) => (r === 'global' ? badge('Global', 'purple') : r === 'cn' ? badge('CN', 'info') : badge(r || '未知'));
 const stateBadge = (a) => {
@@ -480,81 +481,267 @@ function addAccountFlow(root, ctx) {
 
 // ============================================================ 统计
 
+// ============================================================ 统计
+//
+// 版式对齐开放平台用量页 + ZCode 使用统计：
+//   顶部汇总条（累计 Token/请求/积分）→ Token 活动热力图（每日/每周/累计）
+//   → 用量信息（积分 KPI + 消费金额堆叠柱）→ 每日 Token 趋势（分模型平滑线）
+//   → 模型用量环形图 → 按模型统计（请求次数面积图 + Tokens 柱状图）。
+// 数据源：网关 /v1/stats/history（按日聚合，daily_stats.go），本次运行实时口径
+// （TTFB/tok/s）仍在概览页，不在此重复。
+
 export const stats = {
   id: 'stats', label: '统计', icon: '◔',
   mount(root, ctx) {
-    const load = async () => {
-      const d = await all({ stats: api.get('/api/stats') });
-      if (ctx.stale()) return;
-      if (isErr(d.stats)) { root.innerHTML = pageHead('统计', '') + errorCard('读取失败：' + d.stats.__error); return; }
-      root.innerHTML = renderStats(d.stats, ctx);
+    const st = { range: 7, heat: 'daily' };
+    let lastData = null;
+    let view = null;
+
+    const renderNow = () => {
+      if (!lastData || ctx.stale()) return;
+      view = statsView(lastData, st);
+      root.innerHTML = renderStats(view, st, ctx);
+      requestAnimationFrame(() => drawStatsCharts(root, view, st));
     };
+
+    const load = async () => {
+      const d = await all({
+        hist: api.get('/api/stats/history?days=400'),
+        ov: api.get('/api/overview'),
+      });
+      if (ctx.stale()) return;
+      lastData = d;
+      renderNow();
+    };
+
+    // 主题切换改的是 <html data-theme>，canvas 主题色要跟着重画。
+    const themeObs = new MutationObserver(() => renderNow());
+    themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    const onResize = () => renderNow();
+    window.addEventListener('resize', onResize);
+    ctx.onCleanup(() => { themeObs.disconnect(); window.removeEventListener('resize', onResize); });
+
     root.innerHTML = `<div class="empty">正在读取统计…</div>`;
     load().catch((e) => { console.error(e); if (!ctx.stale()) root.innerHTML = errorCard('加载失败：' + e.message); });
     ctx.every(load, Math.max(5000, ctx.info.ui.refresh_ms || 5000));
+    ctx.onReload(load);
 
     delegate(root, {
       reload: () => root.dispatchEvent(new CustomEvent('wb:reload')),
       reset: async () => {
-        const okc = await confirmModal('重置统计', '将清空网关内存中的请求统计（不影响账号积分与日志文件）。', { danger: true, okLabel: '重置' });
+        const okc = await confirmModal('重置统计', '将清空网关内存中的本次运行统计（不影响按日聚合、账号积分与日志文件）。', { danger: true, okLabel: '重置' });
         if (!okc) return;
         try { await api.post('/api/stats/reset'); toast('统计已重置'); root.dispatchEvent(new CustomEvent('wb:reload')); } catch (e) { toastErr(e); }
       },
+      range: (el) => { st.range = Number(el.dataset.range) || 7; renderNow(); },
+      heat: (el) => { st.heat = el.dataset.heat || 'daily'; renderNow(); },
     });
   },
 };
 
-function renderStats(s, ctx) {
-  if (s && s.enabled === false) return pageHead('统计', '') + errorCard('网关未启用统计（config.json 的 metrics.enabled=false）', '开启后需重启网关。');
-  const t = s.total || {};
-  const models = (s.models || []).filter((m) => m.model !== 'total');
+// statsView 把原始响应组装成渲染所需视图（lifetime 汇总 / 时间范围序列 / 分模型聚合）。
+function statsView(d, st) {
+  const hist = isErr(d.hist) ? [] : (d.hist.days || []);
+  const ov = isErr(d.ov) ? null : d.ov;
+  let sumT = 0, sumR = 0, sumC = 0, peak = 0, active = 0;
+  for (const day of hist) {
+    const tk = (day.prompt_tokens || 0) + (day.completion_tokens || 0);
+    sumT += tk; sumR += day.requests || 0; sumC += day.credits || 0;
+    if (tk > peak) peak = tk;
+    if ((day.requests || 0) > 0) active++;
+  }
+  const today = hist.length ? hist[hist.length - 1] : null;
+  const balance = ov && ov.status && ov.status.accounts
+    ? ov.status.accounts.reduce((s, a) => s + (a.credits || 0), 0) : 0;
+
+  const rangeDays = fillRange(hist, st.range);
+  const rangeTotalT = rangeDays.reduce((s, x) => s + x.tokens, 0);
+  const rangeTotalR = rangeDays.reduce((s, x) => s + x.requests, 0);
+  const rangeTotalC = rangeDays.reduce((s, x) => s + x.credits, 0);
+
+  // 分模型聚合（时间范围内），按用量排序取前 8，其余归并「其他」。
+  const agg = new Map();
+  for (const day of rangeDays) {
+    for (const [name, m] of Object.entries(day.models || {})) {
+      const a = agg.get(name) || { name, tokens: 0, requests: 0, credits: 0 };
+      a.tokens += (m.prompt_tokens || 0) + (m.completion_tokens || 0);
+      a.requests += m.requests || 0;
+      a.credits += m.credits || 0;
+      agg.set(name, a);
+    }
+  }
+  const sorted = [...agg.values()].sort((a, b) => b.tokens - a.tokens || b.requests - a.requests);
+  const top = sorted.slice(0, 8).map((m) => ({ ...m, tokensSeries: [], requestsSeries: [], creditsSeries: [] }));
+  const restNames = new Set(sorted.slice(8).map((m) => m.name));
+  if (restNames.size) {
+    top.push({ name: '其他', tokens: 0, requests: 0, credits: 0, tokensSeries: [], requestsSeries: [], creditsSeries: [] });
+  }
+  for (const day of rangeDays) {
+    top.forEach((m) => {
+      if (m.name === '其他') {
+        let t = 0, r = 0, c = 0;
+        for (const [name, mm] of Object.entries(day.models || {})) {
+          if (!restNames.has(name)) continue;
+          t += (mm.prompt_tokens || 0) + (mm.completion_tokens || 0);
+          r += mm.requests || 0;
+          c += mm.credits || 0;
+        }
+        m.tokensSeries.push(t); m.requestsSeries.push(r); m.creditsSeries.push(c);
+      } else {
+        const mm = (day.models || {})[m.name];
+        m.tokensSeries.push(mm ? (mm.prompt_tokens || 0) + (mm.completion_tokens || 0) : 0);
+        m.requestsSeries.push(mm ? mm.requests || 0 : 0);
+        m.creditsSeries.push(mm ? mm.credits || 0 : 0);
+      }
+    });
+  }
+  top.forEach((m, i) => { m.color = PALETTE[i % PALETTE.length]; });
+  const labels = rangeDays.map((x) => shortDate(x.date));
+  return { hist, balance, sumT, sumR, sumC, peak, active, today, rangeDays, rangeTotalT, rangeTotalR, rangeTotalC, top, labels, firstDate: hist.length ? hist[0].date : '' };
+}
+
+// fillRange 以今天为终点回推 n 个自然日，缺失日期补零（图表 x 轴连续）。
+function fillRange(hist, n) {
+  const map = new Map(hist.map((d) => [d.date, d]));
+  const out = [];
+  const now = new Date();
+  const p = (x) => String(x).padStart(2, '0');
+  for (let i = n - 1; i >= 0; i--) {
+    const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const key = `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
+    const d0 = map.get(key);
+    out.push(d0
+      ? { date: key, tokens: (d0.prompt_tokens || 0) + (d0.completion_tokens || 0), requests: d0.requests || 0, credits: d0.credits || 0, models: d0.models || {} }
+      : { date: key, tokens: 0, requests: 0, credits: 0, models: {} });
+  }
+  return out;
+}
+
+const shortDate = (key) => {
+  const [, m, d] = key.split('-');
+  return `${+m}/${+d}`;
+};
+
+const rangeLabel = (st) => (st.range === 30 ? '近 30 日' : '近 7 日');
+
+function renderStats(v, st, ctx) {
   const parts = [];
-  parts.push(pageHead('统计', `统计起点 ${esc(ts(s.since))} · 运行 ${esc(dur(s.uptime_sec))} · 生成于 ${esc(ts(s.now))}`,
-    `<button class="btn" data-act="reload">刷新</button><button class="btn danger" data-act="reset">重置统计</button>`));
-  parts.push(`<div class="grid kpis section">
-    ${kpi('请求总数', num(t.requests), `成功 ${num(t.success)} · 失败 ${num(t.failed)}`)}
-    ${kpi('成功率', t.requests ? pct(t.success / t.requests) : '—', `流式 ${num(t.streaming)}`)}
-    ${kpi('平均 TTFB', t.avg_ttfb_ms ? flt(t.avg_ttfb_ms, 0) + ' ms' : '—', `延迟 ${t.avg_latency_ms ? flt(t.avg_latency_ms, 0) + ' ms' : '—'}`)}
-    ${kpi('吞吐', t.tokens_per_sec ? flt(t.tokens_per_sec, 1) + ' tok/s' : '—', `tokens ${num(t.total_tokens)}`)}
-    ${kpi('积分消耗', num(t.credit), t.requests ? `${flt(t.credit_per_req, 2)} / 请求` : '')}
-    ${kpi('缓存命中', t.cache_hit_rate != null ? pct(t.cache_hit_rate) : '—', `命中 ${num(t.cache_hit_tokens)} · 未命中 ${num(t.cache_miss_tokens)}`)}
+  parts.push(pageHead('统计',
+    `累计自 ${v.firstDate ? esc(v.firstDate) : '—'} · ${num(v.active)} 个活跃日 · 生成于 ${esc(ts(Date.now()))}`,
+    `<div class="seg" role="tablist">
+       <button data-act="range" data-range="7" class="${st.range === 7 ? 'active' : ''}">近 7 日</button>
+       <button data-act="range" data-range="30" class="${st.range === 30 ? 'active' : ''}">近 30 日</button>
+     </div>
+     <button class="btn" data-act="reload">刷新</button>
+     <button class="btn danger" data-act="reset">重置统计</button>`));
+
+  // 顶部汇总条（lifetime 口径）
+  parts.push(`<div class="card sum-strip section">
+    <div class="sum-item"><b>${esc(fmtTokens(v.sumT))}</b><span>累计 Token 数</span></div>
+    <div class="sum-item"><b>${esc(fmtInt(v.sumR))}</b><span>累计请求</span></div>
+    <div class="sum-item"><b>${esc(fmtCredit(v.sumC))}</b><span>累计消耗（积分）</span></div>
+    <div class="sum-item"><b>${esc(fmtTokens(v.peak))}</b><span>峰值单日 Token</span></div>
+    <div class="sum-item"><b>${esc(fmtInt(v.active))}</b><span>活跃天数</span></div>
+  </div>`);
+  if (!v.hist.length) {
+    parts.push(`<div class="alert info" style="margin-top:10px">按日统计自本版本起积累：当天有请求后这里就会开始长出热力图与趋势线，历史请求数据无从补录。</div>`);
+  }
+
+  // Token 活动热力图
+  parts.push(`<div class="card section">
+    <div class="card-head"><h3>Token 活动</h3>
+      <div class="seg">
+        <button data-act="heat" data-heat="daily" class="${st.heat === 'daily' ? 'active' : ''}">每日</button>
+        <button data-act="heat" data-heat="weekly" class="${st.heat === 'weekly' ? 'active' : ''}">每周</button>
+        <button data-act="heat" data-heat="cumulative" class="${st.heat === 'cumulative' ? 'active' : ''}">累计</button>
+      </div></div>
+    <div id="heat"></div>
+    <div class="heat-legend">少 <i class="heat-cell"></i><i class="heat-cell l1"></i><i class="heat-cell l2"></i><i class="heat-cell l3"></i><i class="heat-cell l4"></i> 多
+      <span class="hint" style="margin-left:12px">每列 = 一周（自周一起）· 悬浮看当日明细</span></div>
   </div>`);
 
-  const rows = models.map((m) => {
-    const nm = m.model && m.model.includes(':') ? m.model : m.model;
-    return [
-      `<span class="mono">${esc(nm)}</span>${m.credits ? ` <span class="badge">${esc(m.credits)}</span>` : ''}`,
-      num(m.requests),
-      num(m.success),
-      num(m.failed) + (m.failed ? ' ' + badge('失败', 'danger') : ''),
-      num(m.streaming),
-      flt(m.avg_ttfb_ms, 0),
-      flt(m.avg_latency_ms, 0),
-      flt(m.tokens_per_sec, 1),
-      num(m.prompt_tokens),
-      num(m.completion_tokens),
-      m.cache_hit_rate != null ? pct(m.cache_hit_rate) : '—',
-      num(m.credit),
-      flt(m.credit_per_req, 3),
-      `<span class="hint">${esc(m.last_seen ? tsShort(m.last_seen) : '—')}</span>`,
-    ];
-  });
-  if (t.model) {
-    rows.unshift([
-      `<b>总计</b>`, num(t.requests), num(t.success), num(t.failed), num(t.streaming),
-      flt(t.avg_ttfb_ms, 0), flt(t.avg_latency_ms, 0), flt(t.tokens_per_sec, 1),
-      num(t.prompt_tokens), num(t.completion_tokens), t.cache_hit_rate != null ? pct(t.cache_hit_rate) : '—',
-      num(t.credit), flt(t.credit_per_req, 3), '',
-    ]);
+  // 用量信息（积分）
+  const todayC = v.today ? v.today.credits || 0 : 0;
+  const todayR = v.today ? v.today.requests || 0 : 0;
+  const c30 = v.hist.slice(-30).reduce((s, d) => s + (d.credits || 0), 0);
+  parts.push(`<div class="section"><div class="section-title">用量信息 <span class="hint">（单位：积分）</span></div>
+  <div class="grid kpis">
+    ${kpi('当前积分余额', num(v.balance), '全部账号实时合计')}
+    ${kpi('今日消耗', esc(fmtCredit(todayC)), `${num(todayR)} 次请求`)}
+    ${kpi('近 30 日消耗', esc(fmtCredit(c30)), '按自然日合计')}
+    ${kpi('累计消耗', esc(fmtCredit(v.sumC)), v.firstDate ? `自 ${esc(v.firstDate)}` : '')}
+  </div>
+  <div class="card"><div class="card-head"><h3>消费金额（积分）</h3><span class="hint">${rangeLabel(st)} 合计 ${esc(fmtCredit(v.rangeTotalC))}</span></div>
+    <canvas id="credit-chart" style="width:100%"></canvas>
+    <div class="legend-chips">${v.top.map((m) => `<span><i style="background:${m.color}"></i>${esc(m.name)}</span>`).join('')}</div>
+  </div></div>`);
+
+  // 每日 Token 趋势（分模型平滑线）
+  parts.push(`<div class="section"><div class="card">
+    <div class="card-head"><h3>每日 Token 趋势图</h3><span class="hint">${rangeLabel(st)} · ${esc(fmtTokens(v.rangeTotalT))} tokens</span></div>
+    <canvas id="token-trend" style="width:100%"></canvas>
+    <div class="legend-chips">${v.top.map((m) => `<span><i style="background:${m.color}"></i>${esc(m.name)}</span>`).join('')}</div>
+  </div></div>`);
+
+  // 模型用量环形图
+  parts.push(`<div class="section"><div class="card">
+    <div class="card-head"><h3>模型用量</h3><span class="hint">${rangeLabel(st)}</span></div>
+    <div class="donut-wrap">
+      <canvas id="donut"></canvas>
+      <div class="donut-legend">${v.top.map((m) => `
+        <div class="row"><span class="rl"><i style="background:${m.color}"></i><span class="mono">${esc(m.name)}</span></span>
+          <b>${v.rangeTotalT ? Math.round((m.tokens / v.rangeTotalT) * 100) : 0}%</b>
+          <span class="sub">${esc(fmtTokens(m.tokens))} tokens · ${esc(fmtCredit(m.credits))} 积分</span></div>`).join('') || '<div class="empty">暂无数据</div>'}
+      </div>
+    </div>
+  </div></div>`);
+
+  // 按模型统计（请求次数 + Tokens）
+  parts.push(`<div class="section"><div class="section-title">按模型统计 <span class="hint">（${rangeLabel(st)} · 按用量排序）</span></div>`);
+  if (!v.top.length || v.rangeTotalR === 0) {
+    parts.push(`<div class="card"><div class="empty">该时间范围内暂无请求</div></div>`);
   }
-  parts.push(`<div class="section"><div class="section-title">按模型</div>
-    ${table([
-      { label: '模型' }, { label: '请求', cls: 'num' }, { label: '成功', cls: 'num' }, { label: '失败', cls: 'num' },
-      { label: '流式', cls: 'num' }, { label: 'TTFB ms', cls: 'num' }, { label: '延迟 ms', cls: 'num' }, { label: 'tok/s', cls: 'num' },
-      { label: 'prompt', cls: 'num' }, { label: 'completion', cls: 'num' }, { label: '缓存命中', cls: 'num' },
-      { label: '积分', cls: 'num' }, { label: '积分/请求', cls: 'num' }, { label: '最近' },
-    ], rows, '还没有统计数据')}</div>`);
+  for (const m of v.top) {
+    parts.push(`<h3 class="model-name"><span class="mono">${esc(m.name)}</span>
+      <span class="hint">请求 ${esc(fmtInt(m.requests))} · Tokens ${esc(fmtTokens(m.tokens))} · 积分 ${esc(fmtCredit(m.credits))}</span></h3>
+    <div class="grid two-col" style="margin-bottom:20px">
+      <div class="card"><div class="card-head"><h4>API 请求次数</h4><b class="mono">${esc(fmtInt(m.requests))}</b></div><canvas data-mc="${esc(m.name)}" style="width:100%"></canvas></div>
+      <div class="card"><div class="card-head"><h4>Tokens</h4><b class="mono">${esc(fmtTokens(m.tokens))}</b></div><canvas data-mt="${esc(m.name)}" style="width:100%"></canvas></div>
+    </div>`);
+  }
+  parts.push(`</div>`);
   return parts.join('');
+}
+
+// drawStatsCharts 所有 canvas/热力图的绘制入口（innerHTML 后 rAF 调用）。
+function drawStatsCharts(root, v, st) {
+  const trend = root.querySelector('#token-trend');
+  if (trend && v.top.length) {
+    lineChart(trend, v.labels, v.top.map((m) => ({ color: m.color, values: m.tokensSeries })), { height: 210 });
+  }
+  const credit = root.querySelector('#credit-chart');
+  if (credit && v.top.length) {
+    stackedBars(credit, v.labels, v.top.map((m) => ({ color: m.color, values: m.creditsSeries })), { height: 200 });
+  }
+  const dc = root.querySelector('#donut');
+  if (dc) donut(dc, v.top.map((m) => ({ value: m.tokens, color: m.color })), fmtTokens(v.rangeTotalT), 'tokens');
+  root.querySelectorAll('canvas[data-mc]').forEach((cv) => {
+    const m = v.top.find((x) => x.name === cv.dataset.mc);
+    if (m) lineChart(cv, v.labels, [{ color: m.color, values: m.requestsSeries }], { height: 170, fill: true });
+  });
+  root.querySelectorAll('canvas[data-mt]').forEach((cv) => {
+    const m = v.top.find((x) => x.name === cv.dataset.mt);
+    if (m) bars(cv, v.labels, m.tokensSeries, m.color, { height: 170 });
+  });
+  const heat = root.querySelector('#heat');
+  if (heat) {
+    heatmap(heat, v.hist.map((d) => ({
+      date: d.date,
+      tokens: (d.prompt_tokens || 0) + (d.completion_tokens || 0),
+      requests: d.requests || 0,
+      credits: d.credits || 0,
+    })), st.heat);
+  }
 }
 
 // ============================================================ 日志

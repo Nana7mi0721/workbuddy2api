@@ -82,6 +82,11 @@ func (g *Gateway) Stats() gwResp   { return g.do(http.MethodGet, "/v1/stats", ni
 func (g *Gateway) Models() gwResp  { return g.do(http.MethodGet, "/v1/models", nil) }
 func (g *Gateway) Metrics() gwResp { return g.do(http.MethodGet, "/metrics", nil) }
 
+// StatsHistory 按日聚合统计（网关 /v1/stats/history）：面板统计页长期趋势数据源。
+func (g *Gateway) StatsHistory(days int) gwResp {
+	return g.do(http.MethodGet, fmt.Sprintf("/v1/stats/history?days=%d", days), nil)
+}
+
 func (g *Gateway) ResetStats() gwResp {
 	return g.do(http.MethodPost, "/v1/stats/reset", nil)
 }

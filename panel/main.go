@@ -24,7 +24,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const panelVersion = "1.2.1"
+const panelVersion = "1.3.0"
 
 type App struct {
 	cfg      *PanelConfig
@@ -132,6 +132,7 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", a.hHealth)
 	mux.HandleFunc("GET /api/status", a.hStatus)
 	mux.HandleFunc("GET /api/stats", a.hStats)
+	mux.HandleFunc("GET /api/stats/history", a.hStatsHistory)
 	mux.HandleFunc("POST /api/stats/reset", a.hStatsReset)
 	mux.HandleFunc("GET /api/models", a.hModels)
 	mux.HandleFunc("GET /api/metrics", a.hMetrics)
@@ -550,6 +551,28 @@ func (a *App) hStatus(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) hStats(w http.ResponseWriter, r *http.Request) {
 	resp := a.gateway.Stats()
+	if resp.Err != nil {
+		fail(w, http.StatusBadGateway, "无法连接网关："+resp.Err.Error())
+		return
+	}
+	if resp.Status != http.StatusOK {
+		fail(w, resp.Status, gatewayError(resp))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(resp.Body)
+}
+
+// hStatsHistory 按日聚合统计（面板统计页长期趋势）：days 取 1..400，默认 90。
+func (a *App) hStatsHistory(w http.ResponseWriter, r *http.Request) {
+	days := 90
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 400 {
+			days = n
+		}
+	}
+	resp := a.gateway.StatsHistory(days)
 	if resp.Err != nil {
 		fail(w, http.StatusBadGateway, "无法连接网关："+resp.Err.Error())
 		return

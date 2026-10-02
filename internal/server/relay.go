@@ -354,6 +354,11 @@ func (h *Handler) noteStreamObservation(at relayAttempt, stats *chatStatsReader,
 		log.Printf("WARN: [server] stream usage without credit acct=%s model=%s (no cost observation)",
 			logfmt.Label(at.Acct.UID, at.Acct.Nickname), at.BareModel)
 	}
+	// 按日聚合（daily_stats.go，面板统计页长期趋势）：与成本账本同观测点，
+	// usage 缺失不记（缺失≠0）。
+	if hasUsage {
+		h.daily.Record(at.BareModel, st.prompt, st.toks, st.cacheHit, st.credit)
+	}
 }
 
 // noteSyncObservation 非流式（Aggregate）响应的观测收敛（与 chatCompletions
@@ -365,6 +370,10 @@ func (h *Handler) noteSyncObservation(at relayAttempt, resp map[string]any, st *
 		h.cfg.Pool.NoteModelCost(at.Acct.UID, at.BareModel, credit, total)
 	}
 	fillStatFromUsage(st, resp)
+	// 按日聚合（daily_stats.go）：与流式观测同口径，usage 缺失不记。
+	if st.hasUsage {
+		h.daily.Record(at.BareModel, st.prompt, st.toks, st.cacheHit, st.credit)
+	}
 }
 
 // mapInt 从 map 取整数字段（JSON 数字 → float64）；缺失或类型不符返回 0。

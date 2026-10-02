@@ -308,6 +308,11 @@ func main() {
 			cfg.Budget.DailyCreditLimit)
 	}
 
+	// 按日聚合观测（面板统计页长期趋势）：data/stats_daily.json，30s 脏刷盘，
+	// 退出前最后一次落盘。路径相对进程工作目录（与 admin.audit_file 的 ./data 同惯例）。
+	daily := server.NewDailyStats(filepath.Join("data", "stats_daily.json"))
+	defer daily.Close()
+
 	h := server.NewHandler(server.Config{
 		Pool:         p,
 		Upstream:     up,
@@ -342,6 +347,8 @@ func main() {
 		// 手动签到入口（POST /v1/checkin）。★ 走进程内 CheckinAll ★ 外部 CLI
 		// 签到不会更新网关内存额度（见 internal/server/checkin.go 顶部注释）。
 		CheckinFn: checkinReportFn(sch, p, cfg),
+		// 按日聚合观测（/v1/stats/history 数据源，面板统计页长期趋势）。
+		Daily: daily,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
