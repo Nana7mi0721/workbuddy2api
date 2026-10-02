@@ -196,6 +196,12 @@ type Config struct {
 	// PromptText 解析后的系统提示词文本（custom/append 模式使用）。
 	PromptText string `json:"-"`
 
+	// ModelAlias 模型别名表（可选）：入站模型名先查表再解析 realm 前缀。
+	// 用途：Anthropic/Codex 客户端硬编码他方模型名时映射到网关实际模型，如
+	// {"claude-sonnet-4-5": "cn:glm-5.3", "gpt-5.2": "glm-5.2"}。
+	// 键为入站原名，值可带 cn:/global: 前缀；未命中或空表 = 原样透传。
+	ModelAlias map[string]string `json:"model_alias"`
+
 	Upstash struct {
 		URL   string `json:"url"`   // 空 = 纯内存模式；支持完整 rediss:// URL 或 https://xxx.upstash.io host
 		Token string `json:"token"` // url 非完整连接串时用于组装 rediss://default:<token>@<host>:6379

@@ -319,6 +319,8 @@ func main() {
 		SoftCooldown: cfg.SoftRateDur,
 		PromptMode:   cfg.Prompt.Mode,
 		PromptText:   cfg.PromptText,
+		// 多协议入站的模型别名表（config model_alias，缺省 nil = 原样透传）。
+		ModelAlias: cfg.ModelAlias,
 		// global realm 开关（handler 侧第三道闸：modelList 据此决定是否列 global 名单）。
 		GlobalEnabled: cfg.Global.Enabled,
 		// 运维管理端点开关（config admin.enabled，默认 false）。

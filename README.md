@@ -88,6 +88,16 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容上游网关**，将 ```CodeB
 - **会话头族注入** — 出站携带官方客户端会话头族（`X-Conversation-Request-ID` 聚合主键 · `X-Conversation-ID` 透传 · B3 链路），轮转 / 重试 / 路径回退复用同键，后台按对话轮聚合不再碎片化（issue #35）
 - **指纹脱敏** — 出站请求体黑名单指纹字段清洗（可开关），与提示词体系两层叠加
 
+### 多协议入站
+
+除 OpenAI Chat Completions 外，网关原生支持两种入站协议，转换后走与 chat 完全相同的选号 / 轮转 / 冷却 / 会话头族 / 成本账本 / 指标管线（`relay.go` 共享中继核心）：
+
+- **`POST /v1/messages`**（Anthropic Messages）— 服务 Claude Code、Anthropic 官方 SDK 等客户端。入向：`system`（string/块）→ system 消息、content 块（text / image base64·url）→ OpenAI parts、`tool_use`/`tool_result` ↔ `tool_calls`/`role:tool`、`stop_sequences` → `stop`、`input_schema` → `parameters`、`tool_choice` any→required / tool→函数名、`thinking.budget_tokens` → `reasoning_effort` 分档（≥16k→high、≥8k→medium、其余 low）、`max_tokens` 按规范必填校验；客户端回传的 `thinking` 块剥离（上游不留存推理痕迹）。出向：`reasoning_content` → thinking 块（空签名）、`tool_calls` → tool_use 块、finish_reason → stop_reason（stop→end_turn / length→max_tokens / tool_calls→tool_use）、usage → input/output + cache_read/cache_creation。流式输出完整事件语法：`message_start` → `ping` → `content_block_start/delta/stop`（text_delta / thinking_delta / input_json_delta）→ `message_delta`（stop_reason + usage 修正）→ `message_stop`。鉴权除 `Authorization: Bearer` 外接受 **`x-api-key`** 头；`GET /v1/models` 对带 `anthropic-version` 头的请求返回 Anthropic 形状（`{"type":"model","display_name":...}`）
+- **`POST /v1/messages/count_tokens`** — 启发式估算 `input_tokens`（约 3.5 字符/token + 图片 1600 定额），不发起上游调用；供客户端预检上下文预算，量级参考
+- **`POST /v1/responses`**（OpenAI Responses）— 服务 Codex CLI 等。入向：`instructions` → 前置 system、`input`（string / items 数组：message·input_text·output_text·input_image / function_call / function_call_output；reasoning 与 item_reference 等平台内部态跳过）、`max_output_tokens` → `max_tokens`、扁平 function tools → 嵌套形态、`reasoning.effort` → `reasoning_effort`、`prompt_cache_key` 透传（同时作为粘性键）；`previous_response_id` 显式 400（网关无响应存储，Codex 的 `store=false` 整体重发模式不受影响）。出向：聚合结果 → `response` 对象（reasoning 摘要 / output_text / function_call items，length → `incomplete`+`max_output_tokens`）+ usage details；流式输出 `response.created` → `output_item.added` → `content_part.added` → `output_text.delta`（/ `reasoning_summary_text.delta` / `function_call_arguments.delta`）→ 各 done → `response.completed`（含聚合对象与 usage），带递增 `sequence_number`
+- **模型别名**（`config model_alias`，可选）— 入站模型名先查别名表再解析 `cn:`/`global:` 前缀，供硬编码他方模型名的客户端映射，如 `{"claude-sonnet-4-5": "cn:glm-5.3", "gpt-5.6-codex": "glm-5.3"}`；未命中原样透传。Anthropic 侧 `metadata.user_id`（Claude Code 每会话携带）作为该协议的粘性键兜底
+- **接入示例** — Claude Code：`ANTHROPIC_BASE_URL=http://127.0.0.1:7863 ANTHROPIC_AUTH_TOKEN=<api_key> ANTHROPIC_MODEL=glm-5.2`；Codex CLI：`model = "glm-5.2"`，`model_provider` 指向 `base_url = "http://127.0.0.1:7863/v1"`（Responses 协议）
+
 ### 选号语义
 
 选号 = 会话粘性（命中即定）→ 成本分层（硬过滤）→ 加权随机（软均衡）三层串联，各层语义：

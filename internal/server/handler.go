@@ -111,6 +111,11 @@ type Config struct {
 	// busy=true 表示已有一次签到正在跑（scheduler.ErrBusy：手动入口与定时撞车），
 	// 调用方应回 429 提示稍后再试。nil = 未接线（如测试），端点回 501。
 	CheckinFn func() (report CheckinReport, busy bool, err error)
+
+	// ModelAlias 模型别名表（config model_alias）：入站模型名先查表再解析 realm
+	// 前缀。用途：Anthropic/Codex 客户端硬编码他方模型名（claude-sonnet-4-5 之类）
+	// 时映射到网关实际模型（如 "cn:glm-5.3"）。nil/未命中 = 原样透传。
+	ModelAlias map[string]string
 }
 
 // CheckinResult 单账号签到结果（POST /v1/checkin 返回体的 results 元素）。
@@ -211,7 +216,15 @@ func NewHandler(cfg Config) *Handler {
 		budget:      newDailyBudget(cfg.BudgetLimit),
 	}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
-	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
+	// 多协议入站：Anthropic Messages（Claude Code 等）与 OpenAI Responses（Codex 等）。
+	// 转换层把两种协议压成 OpenAI chat body 后走与 chatCompletions 同一套中继核心
+	// （relay.go：选号/轮转/冷却/头族/成本账本零漂移），响应侧翻译回原生格式。
+	h.mux.HandleFunc("POST /v1/messages", h.withAuth(h.anthropicMessages))
+	h.mux.HandleFunc("POST /v1/messages/count_tokens", h.withAuth(h.anthropicCountTokens))
+	h.mux.HandleFunc("POST /v1/responses", h.withAuth(h.openaiResponses))
+	// /v1/models 内容协商：Anthropic 客户端（带 anthropic-version 头）拿 Anthropic
+	// 形状（{"type":"model","display_name"...}），其余维持 OpenAI 形状不变。
+	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.modelsNegotiated))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /v1/stats", h.withAuth(h.stats))
 	h.mux.HandleFunc("POST /v1/stats/reset", h.withAuth(h.statsReset))
@@ -328,9 +341,24 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			// 常量时间比较（发现 7）：!= 短路时序随前缀长度变化，公网暴露下
 			// 理论上可逐字节探测 key 前缀；ConstantTimeCompare 消除该信号。
 			// 多密钥遍历的时序约束见 matchAuthKey 注释。
-			matched := matchAuthKey(keys, r.Header.Get("Authorization"))
+			// x-api-key 回退：Anthropic 客户端（Claude Code / 官方 SDK）用
+			// x-api-key 头携带密钥而不是 Authorization: Bearer，此处归一化。
+			authz := r.Header.Get("Authorization")
+			if authz == "" {
+				if k := r.Header.Get("x-api-key"); k != "" {
+					authz = "Bearer " + k
+				}
+			}
+			matched := matchAuthKey(keys, authz)
 			if matched == nil {
-				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+				// 401 信封随路径：Anthropic 客户端（/v1/messages*）按官方错误格式
+				// 回 authentication_error，其余维持 OpenAI 形状（SDK 都以状态码为准，
+				// 信封形状只为排障体验）。
+				if strings.HasPrefix(r.URL.Path, "/v1/messages") {
+					writeAnthropicError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key", "")
+				} else {
+					writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+				}
 				return
 			}
 			// 把命中的密钥（含其可见分组）带进上下文，供选号链路取用。
@@ -447,6 +475,39 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   h.modelList(),
+	})
+}
+
+// modelsNegotiated /v1/models 内容协商：带 anthropic-version 头（Anthropic 官方
+// SDK / Claude Code 的标志头）→ Anthropic 形状；其余 → OpenAI 形状（h.models 原样）。
+// 模型集合同源（h.modelList），仅信封不同。
+func (h *Handler) modelsNegotiated(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("anthropic-version") == "" {
+		h.models(w, r)
+		return
+	}
+	list := h.modelList()
+	data := make([]map[string]any, 0, len(list))
+	first := ""
+	for _, m := range list {
+		id, _ := m["id"].(string)
+		if id == "" {
+			continue
+		}
+		if first == "" {
+			first = id
+		}
+		data = append(data, map[string]any{
+			"type":         "model",
+			"id":           id,
+			"display_name": strings.TrimPrefix(strings.TrimPrefix(id, "cn:"), "global:"),
+			"created_at":   "2025-07-27T00:00:00Z",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":     data,
+		"first_id": first,
+		"has_more": false,
 	})
 }
 
