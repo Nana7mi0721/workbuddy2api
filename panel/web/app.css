@@ -49,7 +49,11 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #root { height: 100%; margin: 0; }
+/* 高度链：html → body → #app（index.html 的挂载节点是 #app）必须逐级 100%，
+   否则 .app 退化为内容高度：侧栏不再通栏、.main 拿不到约束高度、滚轮失效。 */
+html, body, #app { height: 100%; margin: 0; }
+:root { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 body {
   background: var(--bg);
   color: var(--fg);
@@ -90,7 +94,13 @@ code, pre, .mono { font-family: var(--mono); }
 .side-foot { margin-top: auto; padding: 10px 8px 0; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
 .side-foot .row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 
-.main { flex: 1; min-width: 0; height: 100%; overflow-y: auto; }
+.main {
+  flex: 1; min-width: 0; height: 100%;
+  overflow-y: auto; overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
 /* 宽屏流体：小屏收紧、大屏放开（最高 1800px），不再在大显示器上留大片空白 */
 .page { padding: 26px clamp(18px, 2.6vw, 48px) 60px; max-width: 1800px; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -100,7 +110,7 @@ code, pre, .mono { font-family: var(--mono); }
 .section { margin-top: 26px; }
 .section-title { font-size: 13px; font-weight: 600; color: var(--fg-soft); margin: 0 0 10px; letter-spacing: 0.01em; }
 .grid { display: grid; gap: 14px; }
-.kpis { grid-template-columns: repeat(auto-fit, minmax(clamp(150px, 13vw, 220px), 1fr)); }
+.kpis { grid-template-columns: repeat(auto-fit, minmax(clamp(150px, 13vw, 215px), 1fr)); }
 .cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); }
 .two-col { grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); }
 .row { display: flex; align-items: center; gap: 8px; }
@@ -295,9 +305,23 @@ details.inline summary { cursor: pointer; font-size: 12.5px; color: var(--fg-sof
 .access-tabs button { padding: 6px 16px; font-size: 13px; border-radius: 8px; }
 .key-mask { font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; }
 
+/* ---------- 滚动条（细样式，对齐开放平台观感） ---------- */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong); border-radius: 8px;
+  border: 2px solid transparent; background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+
 /* ---------- 窄屏适配 ---------- */
 .menu-btn { display: none; position: fixed; top: 12px; left: 12px; z-index: 55; }
 .side-mask { display: none; }
+/* 中等宽度：侧栏收窄一档，给内容区让位（超宽屏仍为 220px） */
+@media (max-width: 1200px) {
+  .sidebar { width: 200px; flex-basis: 200px; }
+}
 @media (max-width: 920px) {
   .sidebar {
     position: fixed; left: 0; top: 0; bottom: 0; z-index: 70;

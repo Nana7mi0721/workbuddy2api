@@ -24,7 +24,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const panelVersion = "1.2.0"
+const panelVersion = "1.2.1"
 
 type App struct {
 	cfg      *PanelConfig

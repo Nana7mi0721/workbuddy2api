@@ -105,7 +105,8 @@ function mount() {
   const page = pages.find((p) => p.id === id);
   if (app.ctx) app.ctx.dispose();
   const view = document.getElementById('view');
-  view.scrollTop = 0;
+  const scroller = document.querySelector('.main');
+  if (scroller) scroller.scrollTop = 0;
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === id));
   document.title = `${page.label} · workbuddy2api 面板`;
   app.page = page;
