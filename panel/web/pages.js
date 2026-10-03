@@ -278,21 +278,55 @@ function taskCard(t) {
 export const accounts = {
   id: 'accounts', label: '账号', icon: '◍',
   mount(root, ctx) {
+    let lastD = null;
+    let lastSig = '';
+    let openUid = null; // 详细信息浮层当前展开的账号（互斥，跨刷新保持）
+
+    const paint = () => {
+      if (!lastD || ctx.stale()) return;
+      root.innerHTML = renderAccounts(lastD.acc, ctx, openUid);
+    };
     const load = async () => {
-      const d = await all({ acc: api.get('/api/accounts'), tasks: api.get('/api/tasks') });
+      const d = await all({ acc: api.get('/api/accounts') });
       if (ctx.stale()) return;
-      if (isErr(d.acc)) { root.innerHTML = pageHead('账号', '') + errorCard('读取失败：' + d.acc.__error); return; }
-      root.innerHTML = renderAccounts(d.acc, d, ctx);
+      if (isErr(d.acc)) {
+        lastD = null; lastSig = '';
+        root.innerHTML = pageHead('账号', '') + errorCard('读取失败：' + d.acc.__error);
+        return;
+      }
+      // 数据没变就不重绘：自动轮询只在该真的有变化时才打断交互
+      //（浮层展开状态、按钮焦点都不会被无意义的重绘吃掉）。
+      const sig = JSON.stringify(d.acc);
+      if (sig === lastSig) return;
+      lastSig = sig;
+      lastD = d;
+      paint();
     };
     root.innerHTML = `<div class="empty">正在读取账号…</div>`;
     load().catch((e) => { console.error(e); if (!ctx.stale()) root.innerHTML = errorCard('加载失败：' + e.message); });
     ctx.every(load, Math.max(4000, ctx.info.ui.refresh_ms || 5000));
     ctx.onReload(load);
 
+    // 详细信息是浮层：点击浮层外部或按 Esc 收起（capture 阶段先于页面内委托执行）。
+    const outside = (e) => {
+      if (!openUid) return;
+      if (e.target.closest && (e.target.closest('.acct-pop') || e.target.closest('[data-act="detail"]'))) return;
+      openUid = null;
+      paint();
+    };
+    const onescape = (e) => { if (e.key === 'Escape' && openUid) { openUid = null; paint(); } };
+    document.addEventListener('click', outside, true);
+    document.addEventListener('keydown', onescape);
+    ctx.onCleanup(() => {
+      document.removeEventListener('click', outside, true);
+      document.removeEventListener('keydown', onescape);
+    });
+
     delegate(root, {
       reload: () => root.dispatchEvent(new CustomEvent('wb:reload')),
       addAccount: () => addAccountFlow(root, ctx),
       copyUid: (el) => copy(el.dataset.uid, 'uid 已复制'),
+      detail: (el) => { openUid = openUid === el.dataset.uid ? null : el.dataset.uid; paint(); },
       act: async (el) => {
         const uid = el.dataset.uid, action = el.dataset.action;
         const names = { disable: '手动禁用', enable: '清除手动禁用', revive: '清除自动禁用/熔断', pause: '暂停（移出 auths）', resume: '恢复（放回 auths）' };
@@ -324,7 +358,7 @@ export const accounts = {
   },
 };
 
-function renderAccounts(d, dd, ctx) {
+function renderAccounts(d, ctx, openUid) {
   const list = d.accounts || [];
   const s = d.summary || {};
   const adminOn = ctx.info.admin_enabled;
@@ -353,22 +387,19 @@ function renderAccounts(d, dd, ctx) {
 
   if (!list.length) parts.push(`<div class="card"><div class="empty">还没有任何账号。点右上角「+ 添加账号」用官方授权码流程登录一个 WorkBuddy 账号。</div></div>`);
 
-  parts.push(`<div class="grid cards">${list.map((a) => accountCard(a, adminOn)).join('')}</div>`);
+  parts.push(`<div class="grid cards">${list.map((a) => accountCard(a, adminOn, a.uid === openUid)).join('')}</div>`);
   return parts.join('');
 }
 
-function accountCard(a, adminOn) {
+function accountCard(a, adminOn, isOpen) {
   const now = Date.now() / 1000;
-  const costs = a.model_costs && typeof a.model_costs === 'object' ? objKV(a.model_costs) : [];
-  const rl = Array.isArray(a.rate_limited_models) ? a.rate_limited_models : [];
-  const expiring = a.credits_expiring && (Array.isArray(a.credits_expiring) ? a.credits_expiring.length : Object.keys(a.credits_expiring || {}).length);
   const tokenInfo = a.token_expires_at ? (a.token_expired ? badge('token 已过期', 'danger') : badge('token 有效至 ' + tsShort(a.token_expires_at * 1000), a.token_expires_at - now < 86400 ? 'warn' : '')) : badge('无本地文件', '');
-  return `<div class="card acct-card">
+  return `<div class="card acct-card${isOpen ? ' has-pop' : ''}">
     <div class="acct-top">
       <div class="brand-mark" style="background:linear-gradient(140deg,#4dbf9b,#2f8f74)">${esc((a.nickname || '?').slice(0, 1))}</div>
       <div style="flex:1;min-width:0">
         <div class="row"><div class="acct-name">${esc(a.nickname || '(未命名账号)')}</div></div>
-        <div class="acct-meta">${esc(uid8(a.uid))} · ${esc(a.uid)}</div>
+        <div class="acct-meta">${esc(a.uid)}</div>
       </div>
       <div class="row wrap" style="justify-content:flex-end">${realmBadge(a.realm)} ${stateBadge(a)}</div>
     </div>
@@ -379,23 +410,7 @@ function accountCard(a, adminOn) {
       <div><span>连续失败</span><b>${num(a.consecutive_fails)}</b></div>
     </div>
     <div class="row wrap">${tokenInfo}${a.in_flight ? badge('在途 ' + a.in_flight, 'info') : ''}${a.file_paused ? badge('文件在 auths-paused', '') : ''}${!a.in_pool && !a.file_paused ? badge('网关未加载', '') : ''}${a.broken ? badge('文件解析失败', 'danger') : ''}</div>
-    <details class="inline"><summary>详细信息</summary>
-      <div class="kv" style="margin-top:8px">
-        <dt>冷却</dt><dd>${a.cooling ? `${esc(a.cool_kind || '')} · 剩 ${esc(dur(a.cool_remaining_sec))}${a.reason ? ' · ' + esc(a.reason) : ''}` : '否'}</dd>
-        <dt>禁用原因</dt><dd>${esc(a.disabled_reason || a.manual_reason || '—')}</dd>
-        <dt>最近成功</dt><dd>${esc(a.last_success ? ts(a.last_success) : '—')}</dd>
-        <dt>最近错误</dt><dd>${esc(a.last_err || '—')}</dd>
-        <dt>熔断</dt><dd>${a.breaker_until || a.breaker_fails ? `${num(a.breaker_fails)} 次 · 至 ${esc(a.breaker_until || '—')}` : '—'}</dd>
-        <dt>降级至</dt><dd>${esc(a.degrade_until || '—')}</dd>
-        <dt>state.json</dt><dd>积分 ${num(a.state_credits)} · 最近成功 ${esc(a.last_state_update || '—')}</dd>
-        <dt>账号文件</dt><dd>${a.file_name ? `<code>${esc(a.file_name)}</code>（${a.file_active ? 'auths' : 'auths-paused'}，修改于 ${esc(tsShort(a.file_modtime * 1000))}）` : '—'}</dd>
-        <dt>过期积分</dt><dd>${expiring ? `<code>${esc(JSON.stringify(a.credits_expiring))}</code>` : '—'}</dd>
-      </div>
-      ${rl.length ? `<div style="margin-top:8px"><div class="hint">限流模型</div>${rl.map((r) => `<div class="mono" style="font-size:12px">${esc(r.model)} → ${esc(r.reason || '')} 至 ${esc(r.until || r.reset_at || '')}</div>`).join('')}</div>` : ''}
-      ${costs.length ? `<div style="margin-top:8px"><div class="hint">模型成本（cost_per_1k）</div>
-        ${table([{ label: '模型' }, { label: '倍率', cls: 'num' }, { label: '采集数', cls: 'num' }, { label: '最近' }],
-          costs.map(([m, v]) => [esc(m), flt(v && v.cost_per_1k, 4), num(v && v.samples), esc((v && v.last_seen) || '—')]))}</div>` : ''}
-    </details>
+    ${accountDetail(a, isOpen)}
     <div class="acct-actions">
       ${adminOn ? (a.manual_disabled
         ? `<button class="btn sm" data-act="act" data-action="enable" data-uid="${esc(a.uid)}">清除手动禁用</button>`
@@ -408,6 +423,38 @@ function accountCard(a, adminOn) {
       <div class="spacer"></div>
       <button class="btn sm ghost" data-act="copyUid" data-uid="${esc(a.uid)}">复制 uid</button>
     </div>
+  </div>`;
+}
+
+// accountDetail 详细信息：浮层下拉（absolute，不影响其他卡片的布局），展开状态由
+// 页面 state（openUid）持有——自动刷新重绘后仍保持展开；点浮层外 / Esc 收起。
+function accountDetail(a, isOpen) {
+  // /status 的 model_costs 是数组（[{model,cost_per_1k,last_seen,samples}]）；
+  // state.json 兜底路径是 map（模型名 → 成本）。两种形状都归一成 [模型名, 值]。
+  const costs = Array.isArray(a.model_costs)
+    ? a.model_costs.filter((c) => c && typeof c === 'object').map((c) => [c.model || '(未知)', c])
+    : (a.model_costs && typeof a.model_costs === 'object' ? objKV(a.model_costs) : []);
+  const rl = Array.isArray(a.rate_limited_models) ? a.rate_limited_models : [];
+  const expiring = a.credits_expiring && (Array.isArray(a.credits_expiring) ? a.credits_expiring.length : Object.keys(a.credits_expiring || {}).length);
+  const body = `
+    <div class="kv">
+      <dt>冷却</dt><dd>${a.cooling ? `${esc(a.cool_kind || '')} · 剩 ${esc(dur(a.cool_remaining_sec))}${a.reason ? ' · ' + esc(a.reason) : ''}` : '否'}</dd>
+      <dt>禁用原因</dt><dd>${esc(a.disabled_reason || a.manual_reason || '—')}</dd>
+      <dt>最近成功</dt><dd>${a.last_success ? esc(ts(a.last_success)) : '—'}</dd>
+      <dt>最近错误</dt><dd>${a.last_err ? esc(ts(a.last_err)) : '—'}</dd>
+      <dt>熔断</dt><dd>${a.breaker_until || a.breaker_fails ? `${num(a.breaker_fails)} 次${a.breaker_until ? ' · 至 ' + esc(ts(a.breaker_until)) : ''}` : '—'}</dd>
+      <dt>降级至</dt><dd>${a.degrade_until ? esc(ts(a.degrade_until)) : '—'}</dd>
+      <dt>state.json</dt><dd>积分 ${num(a.state_credits)} · 最近成功 ${a.last_state_update ? esc(ts(a.last_state_update)) : '—'}</dd>
+      <dt>账号文件</dt><dd>${a.file_name ? `<code>${esc(a.file_name)}</code>（${a.file_active ? 'auths' : 'auths-paused'}，修改于 ${esc(tsShort(a.file_modtime * 1000))}）` : '—'}</dd>
+      <dt>过期积分</dt><dd>${expiring ? `<code>${esc(JSON.stringify(a.credits_expiring))}</code>` : '—'}</dd>
+    </div>
+    ${rl.length ? `<div style="margin-top:8px"><div class="hint">限流模型</div>${rl.map((r) => `<div class="mono" style="font-size:12px">${esc(r.model)} → ${esc(r.reason || '')} 至 ${esc(ts(r.until || r.reset_at))}</div>`).join('')}</div>` : ''}
+    ${costs.length ? `<div style="margin-top:8px"><div class="hint">模型成本（cost_per_1k）</div>
+      ${table([{ label: '模型' }, { label: '倍率', cls: 'num' }, { label: '采集数', cls: 'num' }, { label: '最近' }],
+        costs.map(([m, v]) => [esc(m), flt(v && v.cost_per_1k, 4), num(v && v.samples), v && v.last_seen ? esc(tsShort(v.last_seen)) : '—']))}</div>` : ''}`;
+  return `<div class="acct-detail">
+    <button class="acct-detail-toggle${isOpen ? ' open' : ''}" data-act="detail" data-uid="${esc(a.uid)}" aria-expanded="${isOpen ? 'true' : 'false'}"><i class="tri"></i>详细信息</button>
+    ${isOpen ? `<div class="acct-pop">${body}</div>` : ''}
   </div>`;
 }
 
@@ -517,9 +564,11 @@ export const stats = {
     // 主题切换改的是 <html data-theme>，canvas 主题色要跟着重画。
     const themeObs = new MutationObserver(() => renderNow());
     themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    const onResize = () => renderNow();
+    // 拖动窗口会连续触发 resize，全量重绘 + canvas 重画要防抖，否则掉帧卡顿。
+    let rsTimer = 0;
+    const onResize = () => { clearTimeout(rsTimer); rsTimer = setTimeout(renderNow, 160); };
     window.addEventListener('resize', onResize);
-    ctx.onCleanup(() => { themeObs.disconnect(); window.removeEventListener('resize', onResize); });
+    ctx.onCleanup(() => { themeObs.disconnect(); clearTimeout(rsTimer); window.removeEventListener('resize', onResize); });
 
     root.innerHTML = `<div class="empty">正在读取统计…</div>`;
     load().catch((e) => { console.error(e); if (!ctx.stale()) root.innerHTML = errorCard('加载失败：' + e.message); });
@@ -1365,18 +1414,36 @@ export const access = {
       st.models = md;
       render();
     };
-    const render = () => { root.innerHTML = renderAccess(st, ctx); };
+    const render = () => {
+      root.innerHTML = renderAccess(st, ctx);
+      // 切到模型页签时把焦点放进搜索框（动态插入的 autofocus 属性不生效）。
+      if (st.tab === 'models') {
+        const q = root.querySelector('[data-change="mq"]');
+        if (q && !st.q) q.focus();
+      }
+    };
     root.innerHTML = `<div class="empty">正在读取接入信息…</div>`;
     load().catch((e) => { console.error(e); if (!ctx.stale()) root.innerHTML = errorCard('加载失败：' + e.message); });
     ctx.onReload(load);
     ctx.every(load, 60000); // 接入信息变化频率低（改配置才变），60s 兜底刷新
+
+    // 模型搜索：input 事件逐字过滤，只重绘结果区（整页重绘会让输入框丢焦点）。
+    const applyFilter = (val) => {
+      st.q = val;
+      const body = root.querySelector('#models-body');
+      if (body) body.innerHTML = renderModelsTable(st);
+    };
+    root.addEventListener('input', (ev) => {
+      if (ev.target.matches && ev.target.matches('[data-change="mq"]')) applyFilter(ev.target.value);
+    });
 
     delegate(root, {
       reload: () => root.dispatchEvent(new CustomEvent('wb:reload')),
       tab: (el) => { st.tab = el.dataset.tab; render(); },
       proto: (el) => { st.proto = el.dataset.proto; render(); },
       lang: (el) => { st.lang = el.dataset.lang; render(); },
-      '@mq': (el) => { st.q = el.value; render(); },
+      '@mq': (el) => applyFilter(el.value),
+      newKey: () => createKeyFlow(root),
       copyText: (el) => copy(el.dataset.text || el.dataset.url || '', '已复制到剪贴板'),
       reveal: async (el) => {
         const name = el.dataset.name;
@@ -1406,6 +1473,63 @@ export const access = {
     });
   },
 };
+
+// createKeyFlow 新建 API Key：面板后端生成随机密钥并写入网关 config.json（自动备份）。
+// 网关只在启动时读 config.json，创建成功后给「立即重启」入口；明文仅创建时完整展示一次。
+function createKeyFlow(root) {
+  const m = openModal({
+    title: '新建 API Key',
+    width: '540px',
+    body: `
+      <label class="field"><span>名称</span><input type="text" id="nk-name" placeholder="如：cherrystudio" autocomplete="off" maxlength="64"><em>用于面板展示与取用日志辨认；如需作废，删除后重建（配置页编辑 <code>api_keys</code>）。</em></label>
+      <label class="field"><span>分组（可选）</span><input type="text" id="nk-groups" placeholder="留空 = 不限分组（等价主密钥）" autocomplete="off"><em>逗号分隔，如 <code>cn, global</code>。组名仅小写字母/数字开头，可含下划线、连字符，须与账号 auth 文件里的 groups 精确一致才生效。</em></label>
+      <div id="nk-err"></div>`,
+    footer: `<button class="btn" data-close>取消</button><button class="btn primary" id="nk-go">创建</button>`,
+  });
+  const nameEl = m.el.querySelector('#nk-name');
+  const groupsEl = m.el.querySelector('#nk-groups');
+  const go = m.el.querySelector('#nk-go');
+  nameEl.focus();
+  const submit = async () => {
+    const errEl = m.el.querySelector('#nk-err');
+    const name = nameEl.value.trim();
+    const groups = groupsEl.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    if (!name) { errEl.innerHTML = `<div class="alert danger">请填写密钥名称</div>`; return; }
+    const bad = groups.find((g) => !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(g));
+    if (bad) { errEl.innerHTML = `<div class="alert danger">分组名 <code>${esc(bad)}</code> 不合法：仅小写字母/数字开头，可含小写字母、数字、下划线、连字符</div>`; return; }
+    busy(go);
+    errEl.innerHTML = '';
+    try {
+      const r = await api.post('/api/access/keys', { name, groups });
+      m.el.querySelector('.modal .body').innerHTML = `
+        <div class="alert ok">密钥已创建并写入网关 <code>config.json</code>${r.backup ? `（原文件已备份为 <code>${esc(String(r.backup).split('\\').pop())}</code>）` : ''}。</div>
+        <label class="field" style="margin-top:12px"><span>密钥明文（仅此一次完整展示）</span>
+          <div class="link-box"><input type="text" id="nk-key" readonly value="${esc(r.key)}"><button class="btn" id="nk-copy">复制</button></div>
+          <em>重启网关后生效。请立即保存——关闭本窗后列表里只有掩码。</em>
+        </label>
+        <div class="row"><button class="btn" id="nk-restart">立即重启网关</button><span class="hint">不重启的话，新密钥要等网关下次重启才可用</span></div>`;
+      m.el.querySelector('#nk-copy').onclick = () => copy(r.key, '密钥已复制到剪贴板');
+      m.el.querySelector('#nk-restart').onclick = async (ev) => {
+        const okc = await confirmModal('重启网关', '重启会造成 1~5 秒的请求中断，确认继续？', { okLabel: '重启' });
+        if (!okc) return;
+        busy(ev.target);
+        try {
+          await api.post('/api/service/restart');
+          toast('网关已重启，新密钥已生效', 'ok', 4200);
+        } catch (err) { toastErr(err); }
+        busy(ev.target, false);
+      };
+      m.el.querySelector('.modal footer').innerHTML = `<button class="btn primary" data-close>完成</button>`;
+      toast('API Key 已创建：' + name);
+      setTimeout(() => root.dispatchEvent(new CustomEvent('wb:reload')), 300);
+    } catch (e) {
+      errEl.innerHTML = `<div class="alert danger">${esc(e.message)}</div>`;
+      busy(go, false);
+    }
+  };
+  go.addEventListener('click', submit);
+  [nameEl, groupsEl].forEach((el) => el.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); }));
+}
 
 function lanBaseURL(base) {
   // 用当前访问页面的 hostname 推导局域网地址（面板与网关同机部署）。
@@ -1459,9 +1583,12 @@ function renderBasics(st) {
   parts.push(`<div class="section"><div class="section-title">端点清单</div>${table([{ label: '协议' }, { label: '端点' }, { label: '说明' }], rows, '无端点')}</div>`);
   // 密钥
   const keys = acc.keys || [];
+  const keyHead = `<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+    <div class="section-title" style="margin:0">API 密钥</div>
+    <button class="btn sm primary" data-act="newKey">+ 新建 API Key</button></div>`;
   if (!keys.length) {
-    parts.push(`<div class="section"><div class="section-title">API 密钥</div>
-      <div class="card"><div class="alert warn">网关未配置 <code>api_key</code>（不鉴权模式）。生产 / 局域网环境建议在<a href="#/config">配置页</a>设置密钥。</div></div></div>`);
+    parts.push(`<div class="section">${keyHead}
+      <div class="card"><div class="alert warn">网关未配置 <code>api_key</code>（不鉴权模式）。生产 / 局域网环境建议新建一把密钥（写入后重启网关生效）。</div></div></div>`);
   } else {
     const rows = keys.map((k) => {
       const shown = st.revealed[k.main ? 'main' : k.name];
@@ -1475,8 +1602,8 @@ function renderBasics(st) {
           <button class="btn sm primary" data-act="copyKey" data-name="${esc(nm)}">复制</button>
         </span>`];
     });
-    parts.push(`<div class="section"><div class="section-title">API 密钥</div>${table([{ label: '名称' }, { label: '密钥' }, { label: '操作' }], rows)}
-      <div class="hint" style="margin-top:8px">「显示 / 复制」会把密钥明文经面板后端取出一次，取用记录在面板运行日志中；密钥本体保存在网关 <code>config.json</code>，<a href="#/config">配置页</a>可增删分组密钥（改动后重启网关生效）。</div></div>`);
+    parts.push(`<div class="section">${keyHead}${table([{ label: '名称' }, { label: '密钥' }, { label: '操作' }], rows)}
+      <div class="hint" style="margin-top:8px">「显示 / 复制」会把密钥明文经面板后端取出一次，取用记录在面板运行日志中；密钥本体保存在网关 <code>config.json</code>。新建密钥点右上角按钮（写入 config.json 并自动备份，重启网关后生效）；删除密钥请在<a href="#/config">配置页</a>编辑 <code>api_keys</code> 段。</div></div>`);
   }
   return parts.join('');
 }
@@ -1484,12 +1611,17 @@ function renderBasics(st) {
 function renderModelsTab(st) {
   const parts = [];
   parts.push(`<div class="log-toolbar" style="margin-bottom:12px">
-    <input type="text" placeholder="搜索模型 id / 描述…" data-change="mq" value="${esc(st.q)}" style="min-width:260px">
+    <input type="text" placeholder="搜索模型 id / 名称 / 描述…" data-change="mq" value="${esc(st.q)}" style="min-width:260px">
     <span class="hint">共 ${num(st.models.length)} 个模型（来自网关 /v1/models，动态）</span>
   </div>`);
+  parts.push(`<div id="models-body">${renderModelsTable(st)}</div>`);
+  return parts.join('');
+}
+
+// renderModelsTable 模型列表结果区（独立成函数：搜索时只重绘这里，输入框不失焦点）。
+function renderModelsTable(st) {
   if (st.modelsErr) {
-    parts.push(errorCard('读取模型列表失败：' + esc(st.modelsErr), '网关未启动或无健康账号时模型列表为空。'));
-    return parts.join('');
+    return errorCard('读取模型列表失败：' + esc(st.modelsErr), '网关未启动或无健康账号时模型列表为空。');
   }
   const q = st.q.trim().toLowerCase();
   const list = st.models.filter((m) => !q || String(m.id || '').toLowerCase().includes(q) || String(m.description || '').toLowerCase().includes(q) || String(m.name || '').toLowerCase().includes(q));
@@ -1508,10 +1640,11 @@ function renderModelsTab(st) {
       caps.join(' ') || '—',
     ];
   });
-  parts.push(`${table([
+  const parts = [];
+  parts.push(table([
     { label: '模型 id' }, { label: '名称' }, { label: '倍率' }, { label: '上下文', cls: 'num' },
     { label: '最大输出', cls: 'num' }, { label: '推理档位' }, { label: '能力' },
-  ], rows, q ? '没有匹配的模型' : '暂无模型（网关动态列表为空）')}`);
+  ], rows, q ? '没有匹配的模型' : '暂无模型（网关动态列表为空）'));
   parts.push(`<div class="hint" style="margin-top:8px">倍率为上游积分计费原文（如 <code>x0.05</code>）；「模型 id」可直接用于请求体的 <code>model</code> 字段，支持 <code>cn:</code> / <code>global:</code> 前缀选域。</div>`);
   return parts.join('');
 }

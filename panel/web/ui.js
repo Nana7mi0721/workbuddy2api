@@ -29,7 +29,7 @@ export function busy(el, on = true) {
   }
 }
 
-/** 通用弹窗：{title, body(html), footer(html)} → 返回 {el, close} */
+/** 通用弹窗：{title, body(html), footer(html)} → 返回 {el, close}。Esc 可关闭。 */
 export function openModal({ title, body, footer = '', width }) {
   const root = document.getElementById('modal-root');
   const mask = document.createElement('div');
@@ -41,7 +41,13 @@ export function openModal({ title, body, footer = '', width }) {
       ${footer ? `<footer>${footer}</footer>` : ''}
     </div>`;
   root.appendChild(mask);
-  const close = () => mask.remove();
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const close = () => {
+    if (!mask.isConnected) return;
+    mask.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  document.addEventListener('keydown', onKey);
   mask.addEventListener('click', (e) => {
     if (e.target === mask || e.target.closest('[data-close]')) close();
   });

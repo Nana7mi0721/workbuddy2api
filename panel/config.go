@@ -11,12 +11,12 @@ import (
 // PanelConfig 是面板自身的配置（panel.json），与网关的 config.json 分离。
 // 所有网关相关路径默认相对于 panel.json 所在目录（= 网关部署目录）。
 type PanelConfig struct {
-	Listen  string      `json:"listen"`
-	Gateway GatewayCfg  `json:"gateway"`
-	Auth    AuthCfg     `json:"auth"`
-	UI      UICfg       `json:"ui"`
-	path    string      // panel.json 绝对路径（不序列化）
-	baseDir string      // 网关部署目录（= panel.json 所在目录）
+	Listen  string     `json:"listen"`
+	Gateway GatewayCfg `json:"gateway"`
+	Auth    AuthCfg    `json:"auth"`
+	UI      UICfg      `json:"ui"`
+	path    string     // panel.json 绝对路径（不序列化）
+	baseDir string     // 网关部署目录（= panel.json 所在目录）
 }
 
 type GatewayCfg struct {
@@ -152,10 +152,10 @@ func (c *PanelConfig) BaseDir() string   { return c.baseDir }
 // 面板用它来代填鉴权头；api_keys 供 API 配置页的密钥列表展示（列表只出掩码，
 // 明文仅在用户显式点「显示」时经 /api/access/reveal 单把取用）。
 type GatewayConfig struct {
-	Listen string `json:"listen"`
-	APIKey string `json:"api_key"`
+	Listen  string          `json:"listen"`
+	APIKey  string          `json:"api_key"`
 	APIKeys []GatewayAPIKey `json:"api_keys"`
-	Admin  struct {
+	Admin   struct {
 		Enabled      bool   `json:"enabled"`
 		AuditEnabled bool   `json:"audit_enabled"`
 		AuditFile    string `json:"audit_file"`

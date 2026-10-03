@@ -77,18 +77,35 @@ function xLabelIdx(len, count) {
   return [...out].sort((a, b) => a - b);
 }
 
-// smoothPath Catmull-Rom → 贝塞尔，让曲线像 ZCode 的平滑趋势线。
+// smoothPath 单调三次插值（Fritsch–Carlson）→ 贝塞尔，平滑观感对齐 ZCode 趋势线。
+// 不用 Catmull-Rom：它在「长平线 + 单点突刺」时控制点（p2-(p3-p1)/6）会冲出数据
+// 范围，曲线肉眼可见地掉到 x 轴以下。单调插值把每段切线夹在相邻差商之间、极值点
+// 切线取平，任何输入下曲线都不会越过 [min, max] 数据包络。
 function smoothPath(g, pts) {
+  const n = pts.length;
   g.moveTo(pts[0].x, pts[0].y);
-  if (pts.length < 3) {
-    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+  if (n < 3) {
+    for (let i = 1; i < n; i++) g.lineTo(pts[i].x, pts[i].y);
     return;
   }
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
-    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
-    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
-    g.bezierCurveTo(c1x, c1y, c2x, c2y, p2.x, p2.y);
+  const dx = new Array(n - 1), dm = new Array(n - 1), tan = new Array(n);
+  for (let i = 0; i < n - 1; i++) {
+    dx[i] = pts[i + 1].x - pts[i].x;
+    dm[i] = dx[i] > 0 ? (pts[i + 1].y - pts[i].y) / dx[i] : 0;
+  }
+  tan[0] = dm[0];
+  tan[n - 1] = dm[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    if (dm[i - 1] * dm[i] <= 0) { tan[i] = 0; continue; } // 局部极值点切线取平
+    const w1 = 2 * dx[i] + dx[i - 1], w2 = dx[i] + 2 * dx[i - 1];
+    tan[i] = (w1 + w2) / (w1 / dm[i - 1] + w2 / dm[i]);
+  }
+  for (let i = 0; i < n - 1; i++) {
+    g.bezierCurveTo(
+      pts[i].x + dx[i] / 3, pts[i].y + (tan[i] * dx[i]) / 3,
+      pts[i + 1].x - dx[i] / 3, pts[i + 1].y - (tan[i + 1] * dx[i]) / 3,
+      pts[i + 1].x, pts[i + 1].y,
+    );
   }
 }
 

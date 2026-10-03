@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,7 +26,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const panelVersion = "1.3.0"
+const panelVersion = "1.4.0"
 
 type App struct {
 	cfg      *PanelConfig
@@ -57,9 +59,9 @@ func main() {
 	log.Printf("=== panel %s 启动，listen=%s gateway=%s dir=%s", panelVersion, cfg.Listen, cfg.Gateway.BaseURL, cfg.BaseDir())
 
 	app := &App{
-		cfg:     cfg,
-		runner:  &ServiceRunner{cfg: cfg},
-		started: time.Now(),
+		cfg:      cfg,
+		runner:   &ServiceRunner{cfg: cfg},
+		started:  time.Now(),
 		panelLog: f,
 	}
 	sum := sha256.Sum256([]byte("wbpanel:" + cfg.Auth.Password))
@@ -140,6 +142,7 @@ func (a *App) routes(mux *http.ServeMux) {
 	// ---- API 接入（API 配置页：接入信息/密钥列表，密钥默认掩码） ----
 	mux.HandleFunc("GET /api/access", a.hAccess)
 	mux.HandleFunc("POST /api/access/reveal", a.hAccessReveal)
+	mux.HandleFunc("POST /api/access/keys", a.hAccessKeyCreate)
 	// 概览页快捷操作：面板代触发网关全量签到（服务端注入 api_key）。
 	mux.HandleFunc("POST /api/checkin-proxy", a.hCheckinProxy)
 
@@ -283,19 +286,19 @@ func readBody(r *http.Request, v any) error {
 
 func (a *App) hPanelInfo(w http.ResponseWriter, r *http.Request) {
 	info := map[string]any{
-		"version":       panelVersion,
-		"listen":        a.cfg.Listen,
-		"base_dir":      a.cfg.BaseDir(),
-		"config_file":   a.cfg.path,
-		"gateway":       a.cfg.Gateway.BaseURL,
-		"has_api_key":   a.gwCfg != nil && a.gwCfg.APIKey != "",
-		"admin_enabled": a.gwCfg != nil && a.gwCfg.Admin.Enabled,
-		"metrics_on":    a.gwCfg != nil && a.gwCfg.Metrics.Enabled,
-		"auth_required": a.cfg.Auth.Password != "",
-		"authed":        a.cfg.Auth.Password == "" || a.authed(r),
-		"started_at":    a.started,
-		"ui":            a.cfg.UI,
-		"config_error":  a.gwCfgErr,
+		"version":        panelVersion,
+		"listen":         a.cfg.Listen,
+		"base_dir":       a.cfg.BaseDir(),
+		"config_file":    a.cfg.path,
+		"gateway":        a.cfg.Gateway.BaseURL,
+		"has_api_key":    a.gwCfg != nil && a.gwCfg.APIKey != "",
+		"admin_enabled":  a.gwCfg != nil && a.gwCfg.Admin.Enabled,
+		"metrics_on":     a.gwCfg != nil && a.gwCfg.Metrics.Enabled,
+		"auth_required":  a.cfg.Auth.Password != "",
+		"authed":         a.cfg.Auth.Password == "" || a.authed(r),
+		"started_at":     a.started,
+		"ui":             a.cfg.UI,
+		"config_error":   a.gwCfgErr,
 		"gateway_config": a.gatewayConfigSanitized(),
 	}
 	ok(w, info)
@@ -411,6 +414,116 @@ func (a *App) hAccessReveal(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("密钥明文取用: name=%q label=%q from=%s", body.Name, label, r.RemoteAddr)
 	ok(w, map[string]any{"key": key, "name": body.Name})
+}
+
+// apiKeyGroupRe 与网关 normalizeAPIKeys 同规（cmd/server/config.go）：组名须与账号
+// auth 文件里的 groups 精确相等才生效，所以这里 fail-fast 校验而不是静默纠正。
+var apiKeyGroupRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// hAccessKeyCreate POST /api/access/keys {name, groups[]}：生成一把随机分组密钥，
+// 追加进网关 config.json 的 api_keys 表。写入走 writeConfigFile（JSON 校验 + 备份 +
+// 原子替换）；除 api_keys 外的其他段以 json.RawMessage 原样保留，不做全文件重编码。
+// 网关只在启动时读 config.json：响应 note 明确「重启后生效」，前端提供一键重启。
+func (a *App) hAccessKeyCreate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name   string   `json:"name"`
+		Groups []string `json:"groups"`
+	}
+	if err := readBody(r, &body); err != nil {
+		fail(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		fail(w, http.StatusBadRequest, "密钥名称不能为空")
+		return
+	}
+	if strings.EqualFold(name, "main") {
+		fail(w, http.StatusBadRequest, `名称 "main" 保留给主密钥，请换一个`)
+		return
+	}
+	if len(name) > 64 {
+		fail(w, http.StatusBadRequest, "密钥名称过长（≤64 字符）")
+		return
+	}
+	groups := make([]string, 0, len(body.Groups))
+	seen := map[string]bool{}
+	for _, g := range body.Groups {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		if !apiKeyGroupRe.MatchString(g) {
+			fail(w, http.StatusBadRequest, fmt.Sprintf("分组名 %q 不合法：仅小写字母/数字开头，可含小写字母、数字、下划线、连字符（组名要与账号 groups 精确相等才生效）", g))
+			return
+		}
+		if !seen[g] {
+			seen[g] = true
+			groups = append(groups, g)
+		}
+	}
+	if len(groups) == 0 {
+		groups = nil
+	}
+
+	raw, err := os.ReadFile(a.cfg.ConfigPath())
+	if err != nil {
+		fail(w, http.StatusBadGateway, "读取网关 config.json 失败: "+err.Error())
+		return
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		fail(w, http.StatusInternalServerError, "网关 config.json 不是合法 JSON: "+err.Error())
+		return
+	}
+	var keys []json.RawMessage
+	if v, ok := doc["api_keys"]; ok && len(v) > 0 {
+		if err := json.Unmarshal(v, &keys); err != nil {
+			fail(w, http.StatusInternalServerError, "config.json 的 api_keys 段不是数组: "+err.Error())
+			return
+		}
+	}
+	type nameProbe struct {
+		Name string `json:"name"`
+	}
+	for _, kr := range keys {
+		var p nameProbe
+		if json.Unmarshal(kr, &p) == nil && p.Name == name {
+			fail(w, http.StatusConflict, fmt.Sprintf("同名密钥 %q 已存在，请换一个名称", name))
+			return
+		}
+	}
+	buf := make([]byte, 20)
+	if _, err := rand.Read(buf); err != nil {
+		fail(w, http.StatusInternalServerError, "生成随机密钥失败: "+err.Error())
+		return
+	}
+	key := "sk-wb-" + hex.EncodeToString(buf)
+	entry := map[string]any{"key": key, "name": name}
+	if groups != nil {
+		entry["groups"] = groups
+	}
+	eb, err := json.Marshal(entry)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "序列化新密钥失败: "+err.Error())
+		return
+	}
+	keys = append(keys, eb)
+	doc["api_keys"], _ = json.Marshal(keys)
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "序列化 config.json 失败: "+err.Error())
+		return
+	}
+	backup, err := writeConfigFile(a.cfg.ConfigPath(), string(out))
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "写入 config.json 失败: "+err.Error())
+		return
+	}
+	a.reloadGatewayConfig()
+	log.Printf("密钥新建: name=%q groups=%v from=%s", name, groups, r.RemoteAddr)
+	ok(w, map[string]any{"key": key, "name": name, "groups": groups, "backup": backup,
+		"note": "已写入 config.json；重启网关后生效"})
 }
 
 // hCheckinProxy POST /api/checkin-proxy：面板代触发网关全量签到（/v1/checkin）。
@@ -716,6 +829,15 @@ func isZeroTime(s string) bool {
 	return strings.HasPrefix(s, "0001-01-01")
 }
 
+// nonZeroTime 把零值时间串折叠为空串（「未发生」的哨兵不该以 0001-01-01 的样子
+// 透给前端显示「至 0001-01-01T00:00:00Z」这种噪音）。
+func nonZeroTime(s string) string {
+	if isZeroTime(s) {
+		return ""
+	}
+	return s
+}
+
 func (a *App) hAccounts(w http.ResponseWriter, r *http.Request) {
 	active := scanAuthDir(a.cfg.AuthDir(), "active")
 	paused := scanAuthDir(a.cfg.PausedDir(), "paused")
@@ -800,13 +922,13 @@ func (a *App) hAccounts(w http.ResponseWriter, r *http.Request) {
 			m.ManualReason = p.ManualReason
 			m.SuccessCount = p.SuccessCount
 			m.ErrTotal = p.ErrTotal
-			m.LastSuccess = p.LastSuccess
-			m.LastErr = p.LastErr
+			m.LastSuccess = nonZeroTime(p.LastSuccess)
+			m.LastErr = nonZeroTime(p.LastErr)
 			m.ConsecutiveFail = p.ConsecutiveFail
 			m.InFlight = p.InFlight
 			m.BreakerFails = p.BreakerFails
-			m.BreakerUntil = p.BreakerUntil
-			m.DegradeUntil = p.DegradeUntil
+			m.BreakerUntil = nonZeroTime(p.BreakerUntil)
+			m.DegradeUntil = nonZeroTime(p.DegradeUntil)
 			m.ModelCosts = p.ModelCosts
 			m.RateLimited = p.RateLimited
 			m.CreditsExpiring = p.CreditsExpiring
@@ -833,7 +955,7 @@ func (a *App) hAccounts(w http.ResponseWriter, r *http.Request) {
 					vv := v
 					m.StateCredits = &vv
 				}
-				m.LastStateUpdate = sa.LastSuccess
+				m.LastStateUpdate = nonZeroTime(sa.LastSuccess)
 				if m.CoolKind == "" {
 					if k := sa.CoolKindText(); k != "" && !isZeroTime(sa.Until) {
 						m.StateCoolKind = k
@@ -994,14 +1116,14 @@ func (a *App) hLoginPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	exp := time.Now().Add(time.Duration(lo.ExpiresIn) * time.Second).Unix()
 	ok(w, map[string]any{
-		"uid":              lo.UID,
-		"nickname":         lo.Nickname,
-		"realm":            firstNonEmpty(lo.Realm, normalizeRealm(body.Realm)),
-		"enterprise_id":    lo.EnterpriseID,
-		"domain":           lo.Domain,
-		"expires_at":       exp,
-		"file":             file,
-		"note":             "账号已写入 auths\\，网关 5 秒内自动加载",
+		"uid":           lo.UID,
+		"nickname":      lo.Nickname,
+		"realm":         firstNonEmpty(lo.Realm, normalizeRealm(body.Realm)),
+		"enterprise_id": lo.EnterpriseID,
+		"domain":        lo.Domain,
+		"expires_at":    exp,
+		"file":          file,
+		"note":          "账号已写入 auths\\，网关 5 秒内自动加载",
 	})
 }
 
@@ -1056,11 +1178,11 @@ func (a *App) hLogs(w http.ResponseWriter, r *http.Request) {
 		filtered = filtered[len(filtered)-limit:] // 文件序尾部 = 最新的 limit 条
 	}
 	ok(w, map[string]any{
-		"entries":    filtered,
+		"entries":     filtered,
 		"total_lines": total,
-		"shown":      len(filtered),
-		"file":       a.cfg.LogPath(),
-		"file_size":  statFile(a.cfg.LogPath()).Size,
+		"shown":       len(filtered),
+		"file":        a.cfg.LogPath(),
+		"file_size":   statFile(a.cfg.LogPath()).Size,
 	})
 }
 
@@ -1228,8 +1350,8 @@ func (a *App) hConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 	a.reloadGatewayConfig()
 	ok(w, map[string]any{
-		"backup": backup,
-		"note":   "已写入 config.json；配置改动需重启网关生效（服务页可一键重启）",
+		"backup":  backup,
+		"note":    "已写入 config.json；配置改动需重启网关生效（服务页可一键重启）",
 		"summary": summarizeGatewayConfig(a.gwCfg, a.gwCfgErr),
 	})
 }
@@ -1263,8 +1385,8 @@ func (a *App) hService(w http.ResponseWriter, r *http.Request) {
 	st := a.runner.Status(a.gwCfg)
 	h := a.gateway.Health()
 	resp := map[string]any{
-		"service":      st,
-		"reachable":    h.Err == nil,
+		"service":       st,
+		"reachable":     h.Err == nil,
 		"health_status": h.Status,
 	}
 	if h.Err != nil {

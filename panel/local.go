@@ -243,9 +243,9 @@ func (s StateAccount) CoolKindText() string {
 }
 
 type StateDoc struct {
-	Updated  string                   `json:"updated"`
-	Accounts map[string]StateAccount  `json:"accounts"`
-	Raw      json.RawMessage          `json:"-"`
+	Updated  string                  `json:"updated"`
+	Accounts map[string]StateAccount `json:"accounts"`
+	Raw      json.RawMessage         `json:"-"`
 }
 
 func readState(path string) (*StateDoc, error) {
@@ -264,13 +264,13 @@ func readState(path string) (*StateDoc, error) {
 // ---------- config.json ----------
 
 type ConfigView struct {
-	Path     string `json:"path"`
-	Size     int64  `json:"size"`
-	ModTime  int64  `json:"mod_time"`
-	Text     string `json:"text"`
-	Valid    bool   `json:"valid"`
-	Error    string `json:"error,omitempty"`
-	Backups  []BackupInfo `json:"backups"`
+	Path    string       `json:"path"`
+	Size    int64        `json:"size"`
+	ModTime int64        `json:"mod_time"`
+	Text    string       `json:"text"`
+	Valid   bool         `json:"valid"`
+	Error   string       `json:"error,omitempty"`
+	Backups []BackupInfo `json:"backups"`
 }
 
 type BackupInfo struct {
@@ -362,6 +362,7 @@ type LogEntry struct {
 var chatRowRe = regexp.MustCompile(`^\|\s*#(\d+)\s*\|\s*([0-9:]+)\s*\|\s*([^|]*?)\s*\|\s*(\w+)\s*\|\s*(\d{3})\s*\|\s*([^(|]*)\((\w+)\)\s*\|(.*)$`)
 var appLineRe = regexp.MustCompile(`^(\d{4}/\d{1,2}/\d{1,2} \d{1,2}:\d{2}:\d{2})\s*(.*)$`)
 var kvRe = regexp.MustCompile(`([A-Za-z_/]+)=([0-9.]+)`)
+
 // 网关把生成速度写作「155.2tok/s」——值在前、没有等号，kvRe 抓不到，单独匹配。
 var tokPerSecRe = regexp.MustCompile(`([0-9.]+)\s*tok/s`)
 

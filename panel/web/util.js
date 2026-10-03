@@ -38,7 +38,9 @@ export function parseTime(v) {
   if (!v) return null;
   if (typeof v === 'number') return new Date(v < 1e12 ? v * 1000 : v);
   const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? null : d;
+  // Go 零值时间（0001-01-01…）是「未发生过」的哨兵而非真实时间，按缺失处理显示 —。
+  if (Number.isNaN(d.getTime()) || d.getFullYear() < 2000) return null;
+  return d;
 }
 export function ts(v) {
   const d = parseTime(v);
