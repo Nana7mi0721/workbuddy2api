@@ -26,7 +26,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const panelVersion = "1.4.1"
+const panelVersion = "1.5.0"
 
 type App struct {
 	cfg      *PanelConfig
@@ -1104,8 +1104,9 @@ func (a *App) hLoginStart(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) hLoginPoll(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Realm string `json:"realm"`
-		Save  *bool  `json:"save"`
+		Realm  string `json:"realm"`
+		Region string `json:"region"` // global 专用：注册地区下拉选择（上游检测不到时才用）
+		Save   *bool  `json:"save"`
 	}
 	_ = readBody(r, &body)
 	save := body.Save == nil || *body.Save
@@ -1115,16 +1116,27 @@ func (a *App) hLoginPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	exp := time.Now().Add(time.Duration(lo.ExpiresIn) * time.Second).Unix()
-	ok(w, map[string]any{
+	// global 后置流程：注册激活 → 注册地区完善 → trial 领取（对齐 login.sh 的
+	// Global 分支）。只对 global 且凭证齐全的账号执行；结果逐项回报前端展示，
+	// 任何一步失败都不影响已落盘的账号文件（可事后 ./trial.sh 补）。
+	realm := firstNonEmpty(lo.Realm, normalizeRealm(body.Realm))
+	resp := map[string]any{
 		"uid":           lo.UID,
 		"nickname":      lo.Nickname,
-		"realm":         firstNonEmpty(lo.Realm, normalizeRealm(body.Realm)),
+		"realm":         realm,
 		"enterprise_id": lo.EnterpriseID,
 		"domain":        lo.Domain,
 		"expires_at":    exp,
 		"file":          file,
 		"note":          "账号已写入 auths\\，网关 5 秒内自动加载",
-	})
+	}
+	if realm == "global" && lo.AccessToken != "" && lo.UID != "" {
+		act := completeGlobalSignup(a.globalBase(), lo.AccessToken, lo.UID, body.Region)
+		resp["activation"] = act
+		log.Printf("global 激活 uid=%s nick=%q register=%s region=%s set=%v trial=%s detail=%q",
+			lo.UID, lo.Nickname, act.Register, act.Region, act.RegionSet, act.Trial, act.Detail)
+	}
+	ok(w, resp)
 }
 
 // ---------- 日志 ----------

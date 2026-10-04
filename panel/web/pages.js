@@ -474,6 +474,11 @@ function addAccountFlow(root, ctx) {
         </label>
         <button class="btn primary" id="la-start" style="margin-bottom:12px">获取授权链接</button>
       </div>
+      <div class="form-row" id="la-region-row" style="display:none">
+        <label class="field"><span>注册地区（新 global 号需完善后才能对话，按账号实际所在地区选）</span>
+          <select id="la-region"><option value="SG" selected>SG · 新加坡</option><option value="HK">HK · 中国香港</option><option value="MO">MO · 中国澳门</option><option value="TH">TH · 泰国</option><option value="PH">PH · 菲律宾</option><option value="MY">MY · 马来西亚</option><option value="ID">ID · 印尼</option></select>
+        </label>
+      </div>
       <div id="la-step2" style="display:none">
         <label class="field"><span>授权链接</span>
           <div class="link-box"><input type="text" id="la-url" readonly><button class="btn" id="la-copy">复制</button><button class="btn" id="la-open">打开</button></div>
@@ -491,7 +496,10 @@ function addAccountFlow(root, ctx) {
   const resultEl = m.el.querySelector('#la-result');
   let realm = 'cn';
 
-  m.el.querySelector('#la-realm').addEventListener('change', (e) => { realm = e.target.value; });
+  m.el.querySelector('#la-realm').addEventListener('change', (e) => {
+    realm = e.target.value;
+    m.el.querySelector('#la-region-row').style.display = realm === 'global' ? '' : 'none';
+  });
 
   startBtn.addEventListener('click', async () => {
     busy(startBtn);
@@ -513,9 +521,17 @@ function addAccountFlow(root, ctx) {
     busy(pollBtn);
     statusEl.textContent = '轮询中…';
     try {
-      const r = await api.post('/api/accounts/login/poll', { realm, save: true });
+      const r = await api.post('/api/accounts/login/poll', { realm, region: m.el.querySelector('#la-region').value, save: true });
       statusEl.textContent = '成功';
-      resultEl.innerHTML = `<div class="alert ok">账号 <b>${esc(r.nickname || '')}</b>（${esc(uid8(r.uid))}）已写入 ${esc(r.file || '')}，网关 5 秒内自动加载。</div>`;
+      const act = r.activation;
+      let actHtml = '';
+      if (act) {
+        const regOk = act.register === 'ok';
+        const trialTxt = act.trial === 'ok' ? '试用包已领取' : act.trial === 'already' ? '试用包已领过（幂等）' : act.trial === 'skipped' ? '试用未领取（需先完善注册地区）' : '试用领取失败';
+        const okAll = regOk && (act.trial === 'ok' || act.trial === 'already');
+        actHtml = `<div class="alert ${okAll ? 'ok' : 'warn'}" style="margin-top:8px">global 激活：${regOk ? '注册成功' : esc(act.register)}${act.region ? ` · 地区 ${esc(act.region)}${act.region_set ? '（本次提交）' : '（已有）'}` : ''} · ${esc(trialTxt)}${act.detail ? `<div class="hint" style="margin-top:4px">${esc(act.detail)}</div>` : ''}</div>`;
+      }
+      resultEl.innerHTML = `<div class="alert ok">账号 <b>${esc(r.nickname || '')}</b>（${esc(uid8(r.uid))}）已写入 ${esc(r.file || '')}，网关 5 秒内自动加载。</div>` + actHtml;
       toast('账号添加成功：' + (r.nickname || uid8(r.uid)));
       setTimeout(() => root.dispatchEvent(new CustomEvent('wb:reload')), 800);
     } catch (e) {

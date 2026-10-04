@@ -163,6 +163,11 @@ type GatewayConfig struct {
 	Metrics struct {
 		Enabled bool `json:"enabled"`
 	} `json:"metrics"`
+	// Global 网关 config.json 的 global 段（面板只关心 chat_base 覆盖：
+	// global 激活链路 global.go 用它对齐上游 base；空 = 内置默认 workbuddy.ai）。
+	Global struct {
+		ChatBase string `json:"chat_base"`
+	} `json:"global"`
 }
 
 // GatewayAPIKey 网关 config.json 的 api_keys 元素（分组密钥，与网关侧
