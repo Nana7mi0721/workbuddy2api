@@ -20,6 +20,7 @@ func onlyCheckin(hours []int, jitter int) *Scheduler {
 		CheckinHours: hours, JitterMinutes: jitter,
 		TravelDisabled: true, ActivityDisabled: true, KeepaliveDisabled: true,
 		SchoolDisabled: true, CatDisabled: true,
+		WebchatDisabled: true, // 抖动测试只关心签到一类；webchat 见 webchat_test.go
 	})
 }
 
@@ -138,6 +139,7 @@ func TestJitterBoundaryStillTodayWhenNotYetDue(t *testing.T) {
 // 抖动后不应再挤在同一秒（这正是"摊开负载"的目的）。
 func TestJitterDiffersByTaskKind(t *testing.T) {
 	s := New(Config{
+		WebchatDisabled: true, // 本测试锁定六类任务的 nextWake 行为；webchat 单测见 webchat_test.go
 		CheckinHours: []int{9}, TravelHours: []int{9},
 		JitterMinutes:    30,
 		ActivityDisabled: true, KeepaliveDisabled: true,

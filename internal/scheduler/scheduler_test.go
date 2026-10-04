@@ -47,7 +47,9 @@ func TestNextFireMergesSchedules(t *testing.T) {
 
 // TestNextWakeKeepaliveOnly 签到已过点时按保活整点唤醒。
 func TestNextWakeKeepaliveOnly(t *testing.T) {
-	s := New(Config{CheckinHours: []int{9}, KeepaliveHours: []int{22},
+	s := New(Config{
+		WebchatDisabled: true,
+		CheckinHours: []int{9}, KeepaliveHours: []int{22},
 		TravelDisabled: true, ActivityDisabled: true})
 	at, kinds := s.nextWake(time.Date(2026, 9, 11, 20, 0, 0, 0, time.Local))
 	if want := time.Date(2026, 9, 11, 22, 0, 0, 0, time.Local); !at.Equal(want) {
@@ -61,6 +63,7 @@ func TestNextWakeKeepaliveOnly(t *testing.T) {
 // TestNextWakeSameInstantFiresAll 签到与保活配到同一整点时两类任务都要执行。
 func TestNextWakeSameInstantFiresAll(t *testing.T) {
 	s := New(Config{
+		WebchatDisabled: true, // 本测试锁定六类任务的 nextWake 行为；webchat 单测见 webchat_test.go
 		CheckinHours:     []int{9, 22},
 		TravelHours:      []int{}, // 禁用旅行时点干扰（仅测签到+保活同整点）
 		ActivityHours:    []int{}, // 禁用活跃时点干扰
@@ -99,7 +102,9 @@ func TestNextWakeNothingScheduled(t *testing.T) {
 
 // TestNextWakeCheckinDisabled 显式禁用签到后，排程里不再有签到时点（保活照常）。
 func TestNextWakeCheckinDisabled(t *testing.T) {
-	s := New(Config{CheckinDisabled: true, CheckinHours: []int{9, 21}, KeepaliveHours: []int{22},
+	s := New(Config{
+		WebchatDisabled: true,
+		CheckinDisabled: true, CheckinHours: []int{9, 21}, KeepaliveHours: []int{22},
 		TravelDisabled: true, ActivityDisabled: true})
 	at, kinds := s.nextWake(time.Date(2026, 9, 11, 20, 0, 0, 0, time.Local))
 	if want := time.Date(2026, 9, 11, 22, 0, 0, 0, time.Local); !at.Equal(want) {
@@ -112,7 +117,9 @@ func TestNextWakeCheckinDisabled(t *testing.T) {
 
 // TestNextWakeKeepaliveDisabled 显式禁用保活后，排程里不再有保活时点（签到照常）。
 func TestNextWakeKeepaliveDisabled(t *testing.T) {
-	s := New(Config{KeepaliveDisabled: true, CheckinHours: []int{9, 21}, KeepaliveHours: []int{22},
+	s := New(Config{
+		WebchatDisabled: true,
+		KeepaliveDisabled: true, CheckinHours: []int{9, 21}, KeepaliveHours: []int{22},
 		TravelDisabled: true, ActivityDisabled: true})
 	at, kinds := s.nextWake(time.Date(2026, 9, 11, 20, 0, 0, 0, time.Local))
 	if want := time.Date(2026, 9, 11, 21, 0, 0, 0, time.Local); !at.Equal(want) {
@@ -126,6 +133,7 @@ func TestNextWakeKeepaliveDisabled(t *testing.T) {
 // TestNextWakeBothDisabledNothingScheduled 六类任务都显式禁用 → 无可唤醒时点。
 func TestNextWakeBothDisabledNothingScheduled(t *testing.T) {
 	s := New(Config{
+		WebchatDisabled: true, // 本测试锁定六类任务的 nextWake 行为；webchat 单测见 webchat_test.go
 		CheckinDisabled:   true,
 		TravelDisabled:    true,
 		ActivityDisabled:  true,

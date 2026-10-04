@@ -2,9 +2,9 @@
 //
 // 两个子命令，由 login.sh 顺序驱动：
 //
-//	login [--realm=cn|global] url   → POST /v2/plugin/auth/state?platform=CLI 拿 state+authUrl，
-//	                                  state 落 /tmp/wb2api-login-state.json，stdout 打印授权 URL
-//	login [--realm=cn|global] poll  → 读 state，GET /v2/plugin/auth/token?state= 一次，
+// login [--realm=cn|global] [--state=<path>] url  → POST /v2/plugin/auth/state?platform=CLI 拿 state+authUrl，
+//	                                  state 落 <path>（缺省 /tmp/wb2api-login-state.json），stdout 打印授权 URL
+//	login [--realm=cn|global] [--state=<path>] poll  → 读 state，GET /v2/plugin/auth/token?state= 一次，
 //	                                  成功再 GET /v2/plugin/login/account?state= 拿 uid/nickname，
 //	                                  stdout 打印完整 token+account JSON（含 realm 键）
 //
@@ -134,6 +134,53 @@ const (
 	realmGlobal = "global"
 )
 
+// extractStateFlag 从参数里摘出 --state=<path>（或分离式 --state <path>）：登录
+// state 落盘路径覆盖，panel 注入用。返回 (statePath, 其余参数)；未提供返回 ""，
+// main 里回落默认 stateFile。
+//
+// 为什么需要这个 flag：panel 以子进程驱动 login，固定写在 os.TempDir() 的 state
+// 文件可能被残留文件的只读属性/提权 ACL 挡住（实测 "write state: open …: Access
+// is denied"，授权链接拿不到、前端无法添加账号），也可能撞上安全软件对 temp 目录
+// 的行为规则。panel 把 state 显式指到网关 data 目录即可绕开这一整类问题；CLI
+// 用户不带该 flag，行为与引入前逐字一致。
+func extractStateFlag(args []string) (string, []string, error) {
+	state := ""
+	had := false
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--state":
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("--state requires a value")
+			}
+			state = strings.TrimSpace(args[i+1])
+			had = true
+			i++
+		case strings.HasPrefix(a, "--state="):
+			state = strings.TrimSpace(strings.TrimPrefix(a, "--state="))
+			had = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if had && state == "" {
+		return "", nil, fmt.Errorf("--state path is empty")
+	}
+	return state, rest, nil
+}
+
+// writeStateFile 落盘登录 state：先直接写；失败（常见为残留文件的只读属性或
+// 提权进程留下的 ACL——os.WriteFile 的 O_TRUNC 打不开这类文件，报 Access is
+// denied）则删掉旧文件重试一次，仍失败才返回错误。
+func writeStateFile(path string, raw []byte) error {
+	if err := os.WriteFile(path, raw, 0o600); err == nil {
+		return nil
+	}
+	_ = os.Remove(path)
+	return os.WriteFile(path, raw, 0o600)
+}
+
 // parseRealmArgs 解析开头的 --realm=cn|global（或分离式 --realm <v>）flag，缺省 cn。
 // 大小写不敏感归一化；非法值/缺值报错。桌椅剩余参数（子命令）顺序不变。
 func parseRealmArgs(args []string) (realm string, rest []string, err error) {
@@ -222,7 +269,7 @@ func runURL(base, origin, realm, statePath string, client *http.Client, out io.W
 		fatal("auth state: missing state or authUrl")
 	}
 	raw, _ := json.Marshal(loginState{State: st.State, Realm: realm})
-	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
+	if err := writeStateFile(statePath, raw); err != nil {
 		fatal("write state: %v", err)
 	}
 	fmt.Fprintln(out, st.AuthURL)
@@ -307,12 +354,17 @@ func buildLoginOutput(tok struct {
 }
 
 func main() {
-	realm, rest, err := parseRealmArgs(os.Args[1:])
+	// --state 在 --realm 之前摘出（两个 flag 互不依赖，先后皆可）。
+	stateOverride, args, err := extractStateFlag(os.Args[1:])
 	if err != nil {
-		fatal("%v (usage: login [--realm=cn|global] <url|poll|realm>)", err)
+		fatal("%v (usage: login [--realm=cn|global] [--state=<path>] <url|poll|realm>)", err)
+	}
+	realm, rest, err := parseRealmArgs(args)
+	if err != nil {
+		fatal("%v (usage: login [--realm=cn|global] [--state=<path>] <url|poll|realm>)", err)
 	}
 	if len(rest) < 1 {
-		fatal("usage: login [--realm=cn|global] <url|poll>")
+		fatal("usage: login [--realm=cn|global] [--state=<path>] <url|poll>")
 	}
 	// 每个流程独立 cookie jar（多账号登录互不串会话）
 	jar, _ := cookiejar.New(nil)
@@ -320,12 +372,18 @@ func main() {
 
 	base, origin := realmConfig(realm)
 
+	// state 落盘路径：--state 优先，缺省 os.TempDir()（CLI 行为不变）。
+	statePath := stateFile
+	if stateOverride != "" {
+		statePath = stateOverride
+	}
+
 	switch rest[0] {
 	case "url":
-		runURL(base, origin, realm, stateFile, client, os.Stdout)
+		runURL(base, origin, realm, statePath, client, os.Stdout)
 
 	case "poll":
-		runPoll(base, origin, realm, stateFile, client, os.Stdout)
+		runPoll(base, origin, realm, statePath, client, os.Stdout)
 
 	case "realm":
 		// 交互式选域（login.sh 无 --realm 传参且 stdin 为 tty 时调用）。

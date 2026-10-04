@@ -138,6 +138,11 @@ type Config struct {
 		// https://www.workbuddy.ai（D5，internal/upstream.defaultGlobalBase）。
 		ChatBase    string `json:"chat_base"`
 		BillingBase string `json:"billing_base"`
+		// WebChatModel / WebChatPrompt 国际版每日活跃打卡（schedule.webchat_*）的
+		// 模型与提示词覆盖；空 = 内置默认（deepseek-v4.1-flash / "Hi"）。上游下架
+		// 默认模型时改这里即可，不必改代码。
+		WebChatModel  string `json:"webchat_model"`
+		WebChatPrompt string `json:"webchat_prompt"`
 	} `json:"global"`
 
 	Upstream struct {

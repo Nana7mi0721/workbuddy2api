@@ -88,6 +88,7 @@ func TestNextWakeCatSlot(t *testing.T) {
 // TestNextWakeSchoolCatDisabled 显式禁用 school/cat 后排程只剩签到时点（互不影响）。
 func TestNextWakeSchoolCatDisabled(t *testing.T) {
 	s := New(Config{
+		WebchatDisabled: true, // 本测试锁定六类任务的 nextWake 行为；webchat 单测见 webchat_test.go
 		CheckinHours:      []int{21},
 		TravelDisabled:    true,
 		ActivityDisabled:  true,

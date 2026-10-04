@@ -207,6 +207,9 @@ func main() {
 	up.ChatBaseGlobal = cfg.Global.ChatBase
 	up.BillingBaseGlobal = cfg.Global.BillingBase
 	up.GlobalEnabled = cfg.Global.Enabled
+	// 国际版每日活跃打卡（网页通道）：模型/提示词可覆盖，空 = 内置默认。
+	up.WebChatModel = cfg.Global.WebChatModel
+	up.WebChatPrompt = cfg.Global.WebChatPrompt
 
 	sch := scheduler.New(scheduler.Config{
 		Pool:                p,
@@ -234,6 +237,9 @@ func main() {
 		KeepaliveDisabled: !cfg.Schedule.KeepaliveEnabled,
 		SchoolDisabled:    !cfg.Schedule.SchoolEnabled,
 		CatDisabled:       !cfg.Schedule.CatEnabled,
+		WebchatHours:      cfg.Schedule.WebchatHours,
+		WebchatDisabled:   !cfg.Schedule.WebchatEnabled,
+		WebchatStateFile:  cfg.Schedule.WebchatStateFile,
 	})
 	switch {
 	case !cfg.Schedule.CheckinEnabled:
@@ -267,6 +273,12 @@ func main() {
 		log.Printf("夜猫子任务已禁用（schedule.cat_enabled=false）")
 	} else {
 		log.Printf("夜猫子任务已启用：%v 点（task_runner.py ALL --yes --only black_cat）", cfg.Schedule.CatHours)
+	}
+	if !cfg.Schedule.WebchatEnabled {
+		log.Printf("国际版每日打卡已禁用（schedule.webchat_enabled=false）")
+	} else {
+		log.Printf("国际版每日打卡已启用：%v 点（网页通道 agent 会话，仅 global 账号；webchat_state_file=%s）",
+			cfg.Schedule.WebchatHours, cfg.Schedule.WebchatStateFile)
 	}
 	if cfg.Schedule.JitterMinutes > 0 {
 		log.Printf("排程抖动已启用：各任务触发时刻在名义整点后 0-%d 分钟内确定性偏移（schedule.jitter_minutes）",

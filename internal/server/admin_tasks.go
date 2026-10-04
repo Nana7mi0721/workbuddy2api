@@ -34,11 +34,12 @@ type TaskRunner interface {
 	RunTravelNow()
 	RunSchoolNow()
 	RunCatNow()
+	RunWebchatNow()
 }
 
 // adminTaskNames 可手动触发的任务名白名单（稳定顺序，供 404 文案列举）。
-// 与 config.Schedule 的六个 *_enabled 开关一一对应。
-var adminTaskNames = []string{"checkin", "activity", "keepalive", "travel", "school", "cat"}
+// 与 config.Schedule 的 *_enabled 开关一一对应。
+var adminTaskNames = []string{"checkin", "activity", "keepalive", "travel", "school", "cat", "webchat"}
 
 // adminTaskState 手动触发任务的响应体。只回「已受理」，不含执行结果——任务
 // 异步执行（见文件头），结果看服务日志；这里回显任务名与状态便于脚本断言。
@@ -62,6 +63,7 @@ func (h *Handler) taskRunners() map[string]func() {
 		"travel":    t.RunTravelNow,
 		"school":    t.RunSchoolNow,
 		"cat":       t.RunCatNow,
+		"webchat":   t.RunWebchatNow,
 	}
 }
 

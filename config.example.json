@@ -34,6 +34,12 @@
     "keepalive_enabled": true,
     "school_enabled": true,
     "cat_enabled": true,
+    "webchat_hours": [
+      9,
+      21
+    ],
+    "webchat_enabled": true,
+    "webchat_state_file": "data/webchat-state.json",
     "jitter_minutes": 0,
     "jitter_salt": "",
     "ledger_file": "",
@@ -69,7 +75,9 @@
   "global": {
     "enabled": true,
     "chat_base": "",
-    "billing_base": ""
+    "billing_base": "",
+    "webchat_model": "",
+    "webchat_prompt": ""
   },
   "upstream": {
     "timeout_seconds": 120,

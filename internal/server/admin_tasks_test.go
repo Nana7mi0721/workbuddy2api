@@ -46,6 +46,7 @@ func (f *fakeTaskRunner) RunKeepaliveNow() { f.note("keepalive") }
 func (f *fakeTaskRunner) RunTravelNow()    { f.note("travel") }
 func (f *fakeTaskRunner) RunSchoolNow()    { f.note("school") }
 func (f *fakeTaskRunner) RunCatNow()       { f.note("cat") }
+func (f *fakeTaskRunner) RunWebchatNow()   { f.note("webchat") }
 
 func (f *fakeTaskRunner) snapshot() []string {
 	f.mu.Lock()

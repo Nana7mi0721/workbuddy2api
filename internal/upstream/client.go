@@ -716,6 +716,18 @@ type Client struct {
 	// false 即显式逃生门：即使用户 auth 写了 realm=global 也**不**路由到 global base——
 	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm() 的开关闸呼应）。
 	GlobalEnabled bool
+
+	// WebChatModel / WebChatPrompt 国际版每日活跃打卡（webchat.go 网页通道）的
+	// 模型与提示词覆盖；空 = 内置默认（deepseek-v4.1-flash / "Hi"，hub 实测值）。
+	// 上游下架默认模型时改 config global.webchat_model 即可，不必改代码。
+	WebChatModel  string
+	WebChatPrompt string
+
+	// WebChatTurnTimeout 打卡一轮的最长等待；0 = 内置默认 120s（webTurnTimeout）。
+	WebChatTurnTimeout time.Duration
+	// WebChatPollInterval 打卡状态轮询间隔；0 = 内置默认 3s（webPollInterval）。
+	// 纯测试注入用（调度器测试不起 3s 的真实等待）。
+	WebChatPollInterval time.Duration
 }
 
 // New 生产默认值。Transport 由 newTransport() 集中构造（连接层加固：禁 h2 /

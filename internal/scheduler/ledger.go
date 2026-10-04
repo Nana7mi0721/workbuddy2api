@@ -92,6 +92,8 @@ func kindByName(name string) (taskKind, bool) {
 		return taskSchool, true
 	case "cat":
 		return taskCat, true
+	case "webchat":
+		return taskWebchat, true
 	}
 	return 0, false
 }
@@ -111,6 +113,8 @@ func (s *Scheduler) kindDisabled(k taskKind) bool {
 		return s.cfg.SchoolDisabled
 	case taskCat:
 		return s.cfg.CatDisabled
+	case taskWebchat:
+		return s.cfg.WebchatDisabled
 	}
 	return true
 }

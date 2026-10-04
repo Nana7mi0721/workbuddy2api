@@ -31,6 +31,15 @@ type Config struct {
 	KeepaliveHours []int // 默认 [22]
 	SchoolHours    []int // 默认 [12]：开学季任务（迁移自系统 crontab）
 	CatHours       []int // 默认 [1]：夜猫子任务（迁移自系统 crontab）
+	// WebchatHours 国际版每日活跃打卡时点（默认 [9, 21]）：两个槽位是「主跑 +
+	// 失败补跑」关系——第一槽成功后当日闸门（webchat-state）拦住第二槽；
+	// 只在第一槽失败时第二槽才真正重试。CN 账号恒跳过（国际版专属）。
+	WebchatHours []int
+	// WebchatStateFile 每日打卡完成台账落盘路径（uid → CST 自然日）。
+	// 为什么必须落盘（而 rewardClaimed 可以只存内存）：打卡会真实起一次 agent
+	// 会话、消耗少量积分，重启后若当日状态丢失会对同一批号重跑一遍——白烧积分
+	// 还多打上游。空 = 不落盘（纯内存，重启即失忆），测试用。
+	WebchatStateFile string
 	// JitterMinutes 触发时刻抖动窗口（分钟）：每类任务的触发时刻在该窗口内取一个
 	// **确定性**偏移，把「所有部署都在整点同一秒打上游」摊开，对 WAF 友好。
 	// 0/缺省 = 不加偏移（精确整点，与引入前逐字一致）。
@@ -60,6 +69,9 @@ type Config struct {
 	SchoolDisabled bool
 	// CatDisabled 显式关闭夜猫子任务排程（schedule.cat_enabled=false）。
 	CatDisabled bool
+	// WebchatDisabled 显式关闭国际版每日打卡排程（schedule.webchat_enabled=false）。
+	// 打卡只涉及 global 账号；纯 CN 部署开着它也只是空转一轮（全 skipped）。
+	WebchatDisabled bool
 
 	// RetryDelayMinutes 当日失败重试延迟（分钟）。**0 = 关闭**（缺省，行为与引入前
 	// 逐字一致）。>0 时，某类任务一轮「全灭」后在该延迟后再跑一次（判据见
@@ -87,6 +99,12 @@ type Scheduler struct {
 	// CST 重置（上游增长体系按 CST 自然日刷新，见 travelDay/cstZone）。进程重启即清零
 	// （服务端幂等兜底：重启后当日重复 redeem 会拿 409 正常态，无副作用）。
 	rewardClaimed map[string]string
+
+	// webchatDone 国际版每日打卡的当日完成标记：uid → CST 自然日。与 rewardClaimed
+	// 的关键差别是**必须落盘**（cfg.WebchatStateFile 非空时）：打卡真实消耗积分，
+	// 重启失忆会对同批号重跑；详见 scheduler.Config.WebchatStateFile 注释。
+	// 读写由 mu 串行化（与 adoptTried/rewardClaimed 共用同一把锁）。
+	webchatDone map[string]string
 
 	// checkinMu 串行化签到：定时入口与手动触发互斥，避免同一时刻重复打上游签到接口。
 	checkinMu sync.Mutex
@@ -123,6 +141,9 @@ func New(cfg Config) *Scheduler {
 	if len(cfg.CatHours) == 0 {
 		cfg.CatHours = []int{1}
 	}
+	if len(cfg.WebchatHours) == 0 {
+		cfg.WebchatHours = []int{9, 21}
+	}
 	// 0/缺省 = 1 条（兼容旧行为：每号每天 1 条上报点亮连登）。
 	if cfg.ActivityReportCount <= 0 {
 		cfg.ActivityReportCount = 1
@@ -131,6 +152,7 @@ func New(cfg Config) *Scheduler {
 		cfg:           cfg,
 		adoptTried:    make(map[string]string),
 		rewardClaimed: make(map[string]string),
+		webchatDone:   loadWebchatStateFile(cfg.WebchatStateFile),
 		ledger:        taskledger.New(cfg.LedgerFile),
 	}
 }
@@ -229,6 +251,7 @@ const (
 	taskKeepalive
 	taskSchool
 	taskCat
+	taskWebchat
 )
 
 // String 返回任务类的稳定名字，用作抖动散列的种子（不要用 iota 数值：数值会随
@@ -247,6 +270,8 @@ func (k taskKind) String() string {
 		return "school"
 	case taskCat:
 		return "cat"
+	case taskWebchat:
+		return "webchat"
 	}
 	return "unknown"
 }
@@ -278,6 +303,9 @@ func (s *Scheduler) nextWake(now time.Time) (time.Time, []taskKind) {
 	}
 	if !s.cfg.CatDisabled {
 		slots = append(slots, slot{nextFire(now, s.cfg.CatHours, taskCat, jit, s.cfg.JitterSalt), taskCat})
+	}
+	if !s.cfg.WebchatDisabled {
+		slots = append(slots, slot{nextFire(now, s.cfg.WebchatHours, taskWebchat, jit, s.cfg.JitterSalt), taskWebchat})
 	}
 	// 当日失败重试：**所有已排期的重试**（含尚未到点的）都参与「下一个唤醒时刻」
 	// 的竞争——只算到点的会让未到点的重试失去唤醒源，主循环会一路睡到下一个正常
@@ -412,6 +440,8 @@ func (s *Scheduler) dispatch(ctx context.Context, k taskKind) {
 		s.runSchool(trigger)
 	case taskCat:
 		s.runCat(trigger)
+	case taskWebchat:
+		s.runWebchat(ctx, trigger)
 	}
 }
 

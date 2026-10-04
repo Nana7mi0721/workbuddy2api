@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -22,6 +24,19 @@ type LoginFlow struct {
 var loginFlow = &LoginFlow{}
 
 var linkRe = regexp.MustCompile(`https?://[^\s"'<>）)]+`)
+
+// loginStatePath 面板托管的登录 state 文件路径（按 realm 分文件，落在网关 data 目录）。
+//
+// 为什么不用 login.exe 默认的 os.TempDir() 路径：temp 里的残留文件可能带只读属性
+// 或提权终端留下的 ACL（实测 "write state: open …Access is denied"，授权链接拿
+// 不到、前端无法添加账号），也可能撞上安全软件对 temp 目录的行为规则；data 目录
+// 与网关 state.json 同目录，权限确定可控。按 realm 分文件，cn/global 两次流程
+// 互不覆盖。目录不存在时顺手创建（首次部署 data/ 可能还没被网关建出来）。
+func loginStatePath(cfg *PanelConfig, realm string) string {
+	dir := filepath.Join(cfg.BaseDir(), "data")
+	_ = os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, "login-state-"+realm+".json")
+}
 
 func normalizeRealm(r string) string {
 	switch strings.ToLower(strings.TrimSpace(r)) {
@@ -43,7 +58,8 @@ func StartLogin(cfg *PanelConfig, realm string) (*LoginFlow, error) {
 		return nil, fmt.Errorf("找不到 login 程序：%s", exe)
 	}
 	realm = normalizeRealm(realm)
-	args := []string{"--realm=" + realm, "url"}
+	statePath := loginStatePath(cfg, realm)
+	args := []string{"--realm=" + realm, "--state=" + statePath, "url"}
 	out, errOut, err := runCaptured(exe, args, cfg.BaseDir(), 60*time.Second)
 	combined := strings.TrimSpace(out + "\n" + errOut)
 	if err != nil && !linkRe.MatchString(out) {
@@ -70,7 +86,7 @@ func PollLogin(cfg *PanelConfig, realm string, save bool) (*LoginOutput, string,
 
 	exe := cfg.LoginExe()
 	realm = normalizeRealm(firstNonEmpty(realm, loginFlow.Realm))
-	args := []string{"--realm=" + realm, "poll"}
+	args := []string{"--realm=" + realm, "--state=" + loginStatePath(cfg, realm), "poll"}
 	out, errOut, err := runCaptured(exe, args, cfg.BaseDir(), 60*time.Second)
 	combined := strings.TrimSpace(out + "\n" + errOut)
 	lo := extractLoginJSON(out)

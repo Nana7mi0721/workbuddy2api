@@ -488,6 +488,7 @@ func TestRunCheckinDoesNotTriggerTravel(t *testing.T) {
 // TestNextWakeTravelIndependent 旅行有独立时点，与签到互不影响。
 func TestNextWakeTravelIndependent(t *testing.T) {
 	s := New(Config{
+		WebchatDisabled: true, // 本测试锁定六类任务的 nextWake 行为；webchat 单测见 webchat_test.go
 		CheckinHours:   []int{21},
 		TravelHours:    []int{9},
 		ActivityHours:  []int{10},
@@ -583,6 +584,7 @@ func TestCheckinDisabledTravelStillRuns(t *testing.T) {
 // TestAllFourDisabledNoSpin 六类任务全禁用：Run 不空转。
 func TestAllFourDisabledNoSpin(t *testing.T) {
 	s := New(Config{
+		WebchatDisabled: true, // 本测试锁定六类任务的 nextWake 行为；webchat 单测见 webchat_test.go
 		CheckinDisabled:   true,
 		TravelDisabled:    true,
 		ActivityDisabled:  true,

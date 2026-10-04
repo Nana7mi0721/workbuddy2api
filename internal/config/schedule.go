@@ -20,6 +20,14 @@ type Schedule struct {
 	KeepaliveHours []int `json:"keepalive_hours"` // [22]
 	SchoolHours    []int `json:"school_hours"`    // [12] 开学季任务（迁移自 school/cat 两条系统 crontab）
 	CatHours       []int `json:"cat_hours"`       // [1] 夜猫窗口 23-08 CST，01:00 窗口内补 1 次
+	// WebchatHours 国际版每日活跃打卡时点（[9,21]）：主跑 + 失败补跑两槽。
+	// 打卡只对 global 账号生效（CN 账号恒跳过）；上游规则是「有效对话领每日活跃
+	// 30/50 积分」，打卡会真实起一次 agent 会话、消耗少量积分——成功后当日闸门
+	// （webchat_state_file）拦住第二槽，只有第一槽失败才会重试。
+	WebchatHours []int `json:"webchat_hours"`
+	// WebchatStateFile 打卡当日完成台账落盘路径（uid → CST 自然日）。打卡真实消耗
+	// 积分，重启不能失忆对同批号重跑；空 = 纯内存（测试/明确不要落盘的部署）。
+	WebchatStateFile string `json:"webchat_state_file"`
 	// CheckinEnabled/TravelEnabled/ActivityEnabled/KeepaliveEnabled/SchoolEnabled/CatEnabled
 	// 显式禁用开关（缺省 true）。
 	//
@@ -35,6 +43,9 @@ type Schedule struct {
 	KeepaliveEnabled bool `json:"keepalive_enabled"` // 缺省 true；false = 关 token 保活
 	SchoolEnabled    bool `json:"school_enabled"`    // 缺省 true；false = 停开学季任务
 	CatEnabled       bool `json:"cat_enabled"`       // 缺省 true；false = 停夜猫子任务
+	// WebchatEnabled 国际版每日活跃打卡开关（缺省 true）：只涉及 global 账号，
+	// 纯 CN 部署开着也只空转一轮（全 skipped）。false = 完全停打卡。
+	WebchatEnabled bool `json:"webchat_enabled"`
 	// ActivityReportCount 每号每次活跃上报的条数：领猫前置需 5 次对话，
 	// 默认 5 条把 chat_5 刷满；0/缺省=1 兼容旧行为。
 	ActivityReportCount int `json:"activity_report_count"`
@@ -98,12 +109,17 @@ func DefaultSchedule() Schedule {
 		KeepaliveHours:      []int{22},
 		SchoolHours:         []int{12},
 		CatHours:            []int{1},
+		WebchatHours:        []int{9, 21},
+		// WebchatStateFile 缺省 data/webchat-state.json：与 state.json 同目录，打卡
+		// 是真实消耗积分的写操作，重启必须记得「今天谁已打过」。设空串可关落盘。
+		WebchatStateFile:    "data/webchat-state.json",
 		CheckinEnabled:      true,
 		TravelEnabled:       true,
 		ActivityEnabled:     true,
 		KeepaliveEnabled:    true,
 		SchoolEnabled:       true,
 		CatEnabled:          true,
+		WebchatEnabled:      true,
 		ActivityReportCount: 5, // 领猫前置需 5 次对话，5 连发刷满 chat_5
 		RetryMaxPerDay:      1, // 只写了 retry_delay_minutes 时的保守默认：每天补跑一次
 	}
@@ -141,6 +157,9 @@ func (s *Schedule) Normalize() error {
 	}
 	if len(s.CatHours) == 0 {
 		s.CatHours = []int{1}
+	}
+	if len(s.WebchatHours) == 0 {
+		s.WebchatHours = []int{9, 21}
 	}
 	// 0/负数 → 1 条（兼容旧行为：每号每天 1 条上报点亮连登）。
 	if s.ActivityReportCount <= 0 {
